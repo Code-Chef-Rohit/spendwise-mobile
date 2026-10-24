@@ -29,6 +29,12 @@ import { MOCK_MERCHANTS } from '../constants/categories';
 import { parseBankSms, ParsedBankSms } from '../utils/bankSmsParser';
 import { LiveBankAlert } from '../components/LiveBankNotificationBanner';
 import { fetchDirectBankFeed, simulateAccountDiscovery } from '../utils/directBankEngine';
+import {
+  pushTransactionToCloud,
+  syncAllTransactionsToCloud,
+  subscribeToCloudRealtimeTransactions,
+  configureSupabase,
+} from '../services/supabaseClient';
 
 interface AppContextType {
   isLoadingApp: boolean;
@@ -98,6 +104,8 @@ interface AppContextType {
     message: string;
   }>;
   setCustomBankApi: (url: string, apiKey?: string) => void;
+  syncCloudWithSupabase: () => Promise<number>;
+  configureSupabaseCredentials: (url: string, key: string) => Promise<boolean>;
 }
 
 const AppContext = createContext<AppContextType | undefined>(undefined);
@@ -307,6 +315,7 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
     }
 
     saveState(profile, updatedTx, goals, badges);
+    pushTransactionToCloud(newTx); // Silently syncs to Supabase cloud if configured
     return newTx;
   };
 
@@ -573,6 +582,52 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
     saveState(updated, transactions, goals, badges, connectedAccounts);
   };
 
+  // Supabase Realtime & Cloud Sync
+  const syncCloudWithSupabase = async (): Promise<number> => {
+    try {
+      const syncedCount = await syncAllTransactionsToCloud(transactions);
+      return syncedCount;
+    } catch (e) {
+      console.warn('Sync with Supabase failed:', e);
+      return 0;
+    }
+  };
+
+  const configureSupabaseCredentials = async (url: string, key: string): Promise<boolean> => {
+    const success = await configureSupabase(url, key);
+    if (success) {
+      await syncAllTransactionsToCloud(transactions);
+    }
+    return success;
+  };
+
+  // Supabase Realtime Live Listener
+  useEffect(() => {
+    const unsubscribe = subscribeToCloudRealtimeTransactions((incomingTx) => {
+      setTransactions((prev) => {
+        if (prev.some((t) => t.id === incomingTx.id || (t.bankRef && t.bankRef === incomingTx.bankRef))) {
+          return prev;
+        }
+        const updated = [incomingTx, ...prev];
+        saveState(profile, updated, goals, badges, connectedAccounts);
+        return updated;
+      });
+
+      setLiveBankAlert({
+        id: `alert-supabase-${Date.now()}`,
+        merchant: incomingTx.title,
+        amount: incomingTx.amount,
+        bankName: 'Live Cloud Feed',
+        remainingDailyLimit: budget.todayRemaining - incomingTx.amount,
+        timestamp: 'Just now',
+      });
+    });
+
+    return () => {
+      if (unsubscribe) unsubscribe();
+    };
+  }, [profile, goals, badges, connectedAccounts, budget.todayRemaining]);
+
   // Mark planned / unplanned
   const markExpensePlanned = (txId: string, planned: boolean) => {
     const updated = transactions.map((t) => (t.id === txId ? { ...t, planned } : t));
@@ -729,6 +784,8 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
         disconnectBankAccount,
         syncDirectBankFeed,
         setCustomBankApi,
+        syncCloudWithSupabase,
+        configureSupabaseCredentials,
       }}
     >
       {children}

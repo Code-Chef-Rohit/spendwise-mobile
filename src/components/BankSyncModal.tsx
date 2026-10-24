@@ -1,4 +1,4 @@
-import React, { useState } from 'react';
+import React, { useState, useEffect } from 'react';
 import {
   ActivityIndicator,
   Modal,
@@ -13,13 +13,14 @@ import { useApp } from '../context/AppContext';
 import { parseBankSms, ParsedBankSms, REAL_BANK_SMS_PRESETS } from '../utils/bankSmsParser';
 import { SUPPORTED_BANKS, BankInstitution } from '../utils/directBankEngine';
 import { CATEGORIES } from '../constants/categories';
+import { getSupabaseConfig, isSupabaseConnected } from '../services/supabaseClient';
 
 interface BankSyncModalProps {
   visible: boolean;
   onClose: () => void;
 }
 
-type TabType = 'direct_accounts' | 'add_bank' | 'custom_api' | 'sms_parser';
+type TabType = 'direct_accounts' | 'add_bank' | 'supabase_cloud' | 'custom_api' | 'sms_parser';
 
 export const BankSyncModal: React.FC<BankSyncModalProps> = ({ visible, onClose }) => {
   const {
@@ -31,6 +32,8 @@ export const BankSyncModal: React.FC<BankSyncModalProps> = ({ visible, onClose }
     setCustomBankApi,
     processBankSms,
     addTransaction,
+    syncCloudWithSupabase,
+    configureSupabaseCredentials,
   } = useApp();
 
   const [activeTab, setActiveTab] = useState<TabType>('direct_accounts');
@@ -39,6 +42,26 @@ export const BankSyncModal: React.FC<BankSyncModalProps> = ({ visible, onClose }
     text: string;
     type: 'success' | 'error' | 'info';
   } | null>(null);
+
+  // Supabase Cloud Form State
+  const [supabaseUrl, setSupabaseUrl] = useState('');
+  const [supabaseAnonKey, setSupabaseAnonKey] = useState('');
+  const [isSupabaseActive, setIsSupabaseActive] = useState(false);
+  const [isSavingSupabase, setIsSavingSupabase] = useState(false);
+  const [isCloudSyncing, setIsCloudSyncing] = useState(false);
+
+  useEffect(() => {
+    async function loadSupabase() {
+      const config = await getSupabaseConfig();
+      setSupabaseUrl(config.url);
+      setSupabaseAnonKey(config.anonKey);
+      const connected = await isSupabaseConnected();
+      setIsSupabaseActive(connected);
+    }
+    if (visible) {
+      loadSupabase();
+    }
+  }, [visible]);
 
   // Add Bank Account Form State
   const [selectedBank, setSelectedBank] = useState<BankInstitution>(SUPPORTED_BANKS[0]);
@@ -132,6 +155,58 @@ export const BankSyncModal: React.FC<BankSyncModalProps> = ({ visible, onClose }
       text: apiUrl.trim()
         ? '✅ Custom Bank API endpoint saved! Live sync will now query this URL.'
         : 'Custom Bank API cleared. Reverted to standard Open Banking ledger.',
+      type: 'success',
+    });
+  };
+
+  // Handle Save Supabase Cloud Config
+  const handleSaveSupabase = async () => {
+    if (!supabaseUrl.trim() || !supabaseAnonKey.trim()) {
+      setStatusMessage({
+        text: 'Please enter both Supabase Project URL and Anon Public Key',
+        type: 'error',
+      });
+      return;
+    }
+
+    setIsSavingSupabase(true);
+    setStatusMessage({
+      text: 'Connecting to Supabase PostgreSQL & Realtime...',
+      type: 'info',
+    });
+
+    const ok = await configureSupabaseCredentials(supabaseUrl.trim(), supabaseAnonKey.trim());
+    setIsSavingSupabase(false);
+    setIsSupabaseActive(ok);
+
+    if (ok) {
+      setStatusMessage({
+        text: '⚡ Supabase connected successfully! Realtime subscriptions & Cloud sync active.',
+        type: 'success',
+      });
+    } else {
+      setStatusMessage({
+        text: 'Could not connect to Supabase. Please verify your Project URL and Anon Key.',
+        type: 'error',
+      });
+    }
+  };
+
+  // Handle Cloud Sync Now
+  const handleCloudSyncNow = async () => {
+    setIsCloudSyncing(true);
+    setStatusMessage({
+      text: 'Syncing transactions to Supabase Cloud...',
+      type: 'info',
+    });
+
+    const count = await syncCloudWithSupabase();
+    setIsCloudSyncing(false);
+
+    setStatusMessage({
+      text: count > 0 
+        ? `✅ Synced ${count} transactions to Supabase Cloud PostgreSQL!` 
+        : 'Transactions synced to Supabase Cloud.',
       type: 'success',
     });
   };
@@ -242,47 +317,59 @@ export const BankSyncModal: React.FC<BankSyncModalProps> = ({ visible, onClose }
           </View>
 
           {/* Segmented Tab Switcher */}
-          <View style={styles.tabsContainer}>
-            <TouchableOpacity
-              style={[styles.tabBtn, activeTab === 'direct_accounts' && styles.tabBtnActive]}
-              onPress={() => setActiveTab('direct_accounts')}
-              activeOpacity={0.8}
-            >
-              <Text style={[styles.tabBtnText, activeTab === 'direct_accounts' && styles.tabBtnTextActive]}>
-                🏦 Linked Accounts ({connectedAccounts.length})
-              </Text>
-            </TouchableOpacity>
+          <ScrollView horizontal showsHorizontalScrollIndicator={false} style={styles.tabsScroll}>
+            <View style={styles.tabsContainer}>
+              <TouchableOpacity
+                style={[styles.tabBtn, activeTab === 'direct_accounts' && styles.tabBtnActive]}
+                onPress={() => setActiveTab('direct_accounts')}
+                activeOpacity={0.8}
+              >
+                <Text style={[styles.tabBtnText, activeTab === 'direct_accounts' && styles.tabBtnTextActive]}>
+                  🏦 Accounts ({connectedAccounts.length})
+                </Text>
+              </TouchableOpacity>
 
-            <TouchableOpacity
-              style={[styles.tabBtn, activeTab === 'add_bank' && styles.tabBtnActive]}
-              onPress={() => setActiveTab('add_bank')}
-              activeOpacity={0.8}
-            >
-              <Text style={[styles.tabBtnText, activeTab === 'add_bank' && styles.tabBtnTextActive]}>
-                ➕ Add Bank
-              </Text>
-            </TouchableOpacity>
+              <TouchableOpacity
+                style={[styles.tabBtn, activeTab === 'add_bank' && styles.tabBtnActive]}
+                onPress={() => setActiveTab('add_bank')}
+                activeOpacity={0.8}
+              >
+                <Text style={[styles.tabBtnText, activeTab === 'add_bank' && styles.tabBtnTextActive]}>
+                  ➕ Add Bank
+                </Text>
+              </TouchableOpacity>
 
-            <TouchableOpacity
-              style={[styles.tabBtn, activeTab === 'custom_api' && styles.tabBtnActive]}
-              onPress={() => setActiveTab('custom_api')}
-              activeOpacity={0.8}
-            >
-              <Text style={[styles.tabBtnText, activeTab === 'custom_api' && styles.tabBtnTextActive]}>
-                ⚙️ Custom API
-              </Text>
-            </TouchableOpacity>
+              <TouchableOpacity
+                style={[styles.tabBtn, activeTab === 'supabase_cloud' && styles.tabBtnActive]}
+                onPress={() => setActiveTab('supabase_cloud')}
+                activeOpacity={0.8}
+              >
+                <Text style={[styles.tabBtnText, activeTab === 'supabase_cloud' && styles.tabBtnTextActive]}>
+                  ⚡ Supabase
+                </Text>
+              </TouchableOpacity>
 
-            <TouchableOpacity
-              style={[styles.tabBtn, activeTab === 'sms_parser' && styles.tabBtnActive]}
-              onPress={() => setActiveTab('sms_parser')}
-              activeOpacity={0.8}
-            >
-              <Text style={[styles.tabBtnText, activeTab === 'sms_parser' && styles.tabBtnTextActive]}>
-                📥 SMS/CSV
-              </Text>
-            </TouchableOpacity>
-          </View>
+              <TouchableOpacity
+                style={[styles.tabBtn, activeTab === 'custom_api' && styles.tabBtnActive]}
+                onPress={() => setActiveTab('custom_api')}
+                activeOpacity={0.8}
+              >
+                <Text style={[styles.tabBtnText, activeTab === 'custom_api' && styles.tabBtnTextActive]}>
+                  ⚙️ Bank API
+                </Text>
+              </TouchableOpacity>
+
+              <TouchableOpacity
+                style={[styles.tabBtn, activeTab === 'sms_parser' && styles.tabBtnActive]}
+                onPress={() => setActiveTab('sms_parser')}
+                activeOpacity={0.8}
+              >
+                <Text style={[styles.tabBtnText, activeTab === 'sms_parser' && styles.tabBtnTextActive]}>
+                  📥 SMS/CSV
+                </Text>
+              </TouchableOpacity>
+            </View>
+          </ScrollView>
 
           {/* Feedback Status Banner */}
           {statusMessage && (
@@ -514,6 +601,83 @@ export const BankSyncModal: React.FC<BankSyncModalProps> = ({ visible, onClose }
               </View>
             )}
 
+            {/* TAB: SUPABASE POSTGRESQL & REALTIME */}
+            {activeTab === 'supabase_cloud' && (
+              <View style={styles.formContainer}>
+                <Text style={styles.sectionHeading}>SUPABASE POSTGRESQL & REALTIME</Text>
+                <Text style={styles.sectionSub}>
+                  Connect PaisaPilot to Supabase for instant multi-device sync and Realtime bank transaction alerts without polling.
+                </Text>
+
+                <View style={[styles.supabaseStatusPill, isSupabaseActive ? styles.pillActive : styles.pillInactive]}>
+                  <View style={[styles.statusDot, { backgroundColor: isSupabaseActive ? '#10B981' : '#F59E0B' }]} />
+                  <Text style={[styles.supabaseStatusText, { color: isSupabaseActive ? '#10B981' : '#F59E0B' }]}>
+                    {isSupabaseActive ? '⚡ SUPABASE CONNECTED • REALTIME ACTIVE' : '○ RUNNING IN LOCAL PHONE MEMORY'}
+                  </Text>
+                </View>
+
+                <Text style={styles.inputLabel}>SUPABASE PROJECT URL</Text>
+                <TextInput
+                  style={styles.textInputBox}
+                  placeholder="https://xyzproject.supabase.co"
+                  placeholderTextColor="#64748B"
+                  value={supabaseUrl}
+                  onChangeText={setSupabaseUrl}
+                  autoCapitalize="none"
+                  autoCorrect={false}
+                />
+
+                <Text style={styles.inputLabel}>SUPABASE ANON PUBLIC KEY</Text>
+                <TextInput
+                  style={styles.textInputBox}
+                  placeholder="eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9..."
+                  placeholderTextColor="#64748B"
+                  value={supabaseAnonKey}
+                  onChangeText={setSupabaseAnonKey}
+                  autoCapitalize="none"
+                  autoCorrect={false}
+                  secureTextEntry
+                />
+
+                <TouchableOpacity
+                  style={[styles.saveApiBtn, { backgroundColor: '#4338CA' }]}
+                  onPress={handleSaveSupabase}
+                  activeOpacity={0.85}
+                  disabled={isSavingSupabase}
+                >
+                  {isSavingSupabase ? (
+                    <ActivityIndicator color="#FFFFFF" size="small" />
+                  ) : (
+                    <Text style={styles.saveApiBtnText}>⚡ Connect & Save Supabase</Text>
+                  )}
+                </TouchableOpacity>
+
+                {isSupabaseActive && (
+                  <TouchableOpacity
+                    style={[styles.saveApiBtn, { backgroundColor: '#10B981', marginTop: 10 }]}
+                    onPress={handleCloudSyncNow}
+                    activeOpacity={0.85}
+                    disabled={isCloudSyncing}
+                  >
+                    {isCloudSyncing ? (
+                      <ActivityIndicator color="#FFFFFF" size="small" />
+                    ) : (
+                      <Text style={styles.saveApiBtnText}>☁️ Sync All Transactions to Cloud Now</Text>
+                    )}
+                  </TouchableOpacity>
+                )}
+
+                <View style={styles.apiSpecCard}>
+                  <Text style={styles.apiSpecTitle}>💡 QUICK SUPABASE SETUP</Text>
+                  <Text style={styles.apiNoticeText}>
+                    1. Create free project at supabase.com{'\n'}
+                    2. Run the provided schema in SQL Editor{'\n'}
+                    3. Copy Project URL & Anon Key from Settings → API
+                  </Text>
+                </View>
+              </View>
+            )}
+
             {/* TAB 3: CUSTOM BANK API / WEBHOOK CONFIGURATION */}
             {activeTab === 'custom_api' && (
               <View style={styles.formContainer}>
@@ -729,15 +893,17 @@ const styles = StyleSheet.create({
     fontSize: 14,
     fontWeight: 'bold',
   },
+  tabsScroll: {
+    marginBottom: 14,
+  },
   tabsContainer: {
     flexDirection: 'row',
     backgroundColor: '#1E293B',
     borderRadius: 12,
     padding: 3,
-    marginBottom: 14,
   },
   tabBtn: {
-    flex: 1,
+    paddingHorizontal: 12,
     paddingVertical: 8,
     alignItems: 'center',
     borderRadius: 8,
@@ -753,6 +919,40 @@ const styles = StyleSheet.create({
   tabBtnTextActive: {
     color: '#FFFFFF',
     fontWeight: '800',
+  },
+  supabaseStatusPill: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    paddingHorizontal: 12,
+    paddingVertical: 8,
+    borderRadius: 10,
+    marginBottom: 14,
+    borderWidth: 1,
+  },
+  pillActive: {
+    backgroundColor: 'rgba(16, 185, 129, 0.12)',
+    borderColor: '#10B981',
+  },
+  pillInactive: {
+    backgroundColor: 'rgba(245, 158, 11, 0.12)',
+    borderColor: '#F59E0B',
+  },
+  statusDot: {
+    width: 8,
+    height: 8,
+    borderRadius: 4,
+    marginRight: 8,
+  },
+  supabaseStatusText: {
+    fontSize: 10,
+    fontWeight: '800',
+    letterSpacing: 0.5,
+  },
+  apiNoticeText: {
+    color: '#94A3B8',
+    fontSize: 11,
+    lineHeight: 18,
+    fontFamily: 'monospace',
   },
   statusBanner: {
     padding: 12,
