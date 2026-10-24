@@ -1,6 +1,6 @@
 import React, { useState } from 'react';
 import {
-  Alert,
+  ActivityIndicator,
   Modal,
   ScrollView,
   StyleSheet,
@@ -11,6 +11,7 @@ import {
 } from 'react-native';
 import { useApp } from '../context/AppContext';
 import { parseBankSms, ParsedBankSms, REAL_BANK_SMS_PRESETS } from '../utils/bankSmsParser';
+import { SUPPORTED_BANKS, BankInstitution } from '../utils/directBankEngine';
 import { CATEGORIES } from '../constants/categories';
 
 interface BankSyncModalProps {
@@ -18,25 +19,128 @@ interface BankSyncModalProps {
   onClose: () => void;
 }
 
-type TabType = 'sms_parser' | 'bank_presets' | 'statement_import';
+type TabType = 'direct_accounts' | 'add_bank' | 'custom_api' | 'sms_parser';
 
 export const BankSyncModal: React.FC<BankSyncModalProps> = ({ visible, onClose }) => {
-  const { profile, processBankSms, addTransaction } = useApp();
+  const {
+    profile,
+    connectedAccounts,
+    connectBankAccount,
+    disconnectBankAccount,
+    syncDirectBankFeed,
+    setCustomBankApi,
+    processBankSms,
+    addTransaction,
+  } = useApp();
 
-  const [activeTab, setActiveTab] = useState<TabType>('sms_parser');
+  const [activeTab, setActiveTab] = useState<TabType>('direct_accounts');
+  const [isSyncing, setIsSyncing] = useState(false);
+  const [statusMessage, setStatusMessage] = useState<{
+    text: string;
+    type: 'success' | 'error' | 'info';
+  } | null>(null);
+
+  // Add Bank Account Form State
+  const [selectedBank, setSelectedBank] = useState<BankInstitution>(SUPPORTED_BANKS[0]);
+  const [phoneNumber, setPhoneNumber] = useState('9876543210');
+  const [otpStage, setOtpStage] = useState<'phone' | 'otp'>('phone');
+  const [otpInput, setOtpInput] = useState('123456');
+  const [isConnecting, setIsConnecting] = useState(false);
+
+  // Custom API Form State
+  const [apiUrl, setApiUrl] = useState(profile.customBankApiUrl || '');
+  const [apiKey, setApiKey] = useState(profile.customBankApiKey || '');
+
+  // SMS Parser & Statement State
   const [smsInput, setSmsInput] = useState('');
   const [parsedPreview, setParsedPreview] = useState<ParsedBankSms | null>(null);
-  const [statusMessage, setStatusMessage] = useState<{ text: string; type: 'success' | 'error' | 'info' } | null>(null);
-
-  // Statement import state
   const [statementText, setStatementText] = useState(
     '24/10/2026, Swiggy Food, 380\n24/10/2026, Uber Ride, 140\n24/10/2026, Zepto Grocery, 290'
   );
 
+  // Handle Direct Live Bank Feed Sync
+  const handleSyncDirectFeed = async (accountId?: string) => {
+    setIsSyncing(true);
+    setStatusMessage({
+      text: 'Connecting to bank network via RBI Account Aggregator...',
+      type: 'info',
+    });
+
+    const result = await syncDirectBankFeed(accountId);
+    setIsSyncing(false);
+
+    setStatusMessage({
+      text: result.message,
+      type: result.success ? 'success' : 'error',
+    });
+  };
+
+  // Handle Account Aggregator OTP Request
+  const handleRequestOtp = () => {
+    if (phoneNumber.trim().length < 10) {
+      setStatusMessage({
+        text: 'Please enter a valid 10-digit mobile number linked to your bank account.',
+        type: 'error',
+      });
+      return;
+    }
+
+    setOtpStage('otp');
+    setStatusMessage({
+      text: `OTP sent to +91 ${phoneNumber}. (Use demo OTP: 123456 to verify).`,
+      type: 'info',
+    });
+  };
+
+  // Handle Verify OTP & Link Direct Account
+  const handleVerifyOtpAndLink = async () => {
+    if (otpInput.trim().length < 4) {
+      setStatusMessage({ text: 'Please enter the 6-digit OTP.', type: 'error' });
+      return;
+    }
+
+    setIsConnecting(true);
+    setStatusMessage({
+      text: 'Discovering bank accounts and activating read-only consent...',
+      type: 'info',
+    });
+
+    const result = await connectBankAccount(
+      selectedBank.name,
+      selectedBank.code,
+      `+91 ${phoneNumber}`
+    );
+
+    setIsConnecting(false);
+
+    if (result.success) {
+      setStatusMessage({
+        text: `✅ ${result.message}`,
+        type: 'success',
+      });
+      setOtpStage('phone');
+      setActiveTab('direct_accounts');
+    } else {
+      setStatusMessage({ text: result.message, type: 'error' });
+    }
+  };
+
+  // Handle Save Custom Bank API URL
+  const handleSaveCustomApi = () => {
+    setCustomBankApi(apiUrl, apiKey);
+    setStatusMessage({
+      text: apiUrl.trim()
+        ? '✅ Custom Bank API endpoint saved! Live sync will now query this URL.'
+        : 'Custom Bank API cleared. Reverted to standard Open Banking ledger.',
+      type: 'success',
+    });
+  };
+
+  // Handle SMS Parser
   const handleParseSms = (textToParse?: string) => {
     const text = (textToParse !== undefined ? textToParse : smsInput).trim();
     if (!text) {
-      setStatusMessage({ text: 'Please paste or type a bank SMS message.', type: 'error' });
+      setStatusMessage({ text: 'Please paste a bank SMS message.', type: 'error' });
       return;
     }
 
@@ -45,12 +149,12 @@ export const BankSyncModal: React.FC<BankSyncModalProps> = ({ visible, onClose }
 
     if (result.type === 'otp') {
       setStatusMessage({
-        text: '⚠️ OTP / Verification Code detected. Bank OTPs are ignored to protect your spending budget.',
+        text: '⚠️ OTP / Verification Code detected. Bank OTPs are ignored to protect your budget.',
         type: 'info',
       });
     } else if (!result.isTransaction || result.amount <= 0) {
       setStatusMessage({
-        text: '⚠️ Could not detect a valid debit or credit amount in this message. Check format.',
+        text: '⚠️ Could not detect a valid debit or credit amount in this message.',
         type: 'error',
       });
     } else {
@@ -62,48 +166,16 @@ export const BankSyncModal: React.FC<BankSyncModalProps> = ({ visible, onClose }
   };
 
   const handleCommitParsedSms = () => {
-    if (!smsInput.trim()) {
-      setStatusMessage({ text: 'Please paste a bank SMS first.', type: 'error' });
-      return;
-    }
-
+    if (!smsInput.trim()) return;
     const result = processBankSms(smsInput);
     setStatusMessage({
       text: result.message,
       type: result.success ? 'success' : 'error',
     });
-
     if (result.success) {
       setSmsInput('');
       setParsedPreview(null);
     }
-  };
-
-  const handleSelectPreset = (presetSms: string) => {
-    setSmsInput(presetSms);
-    const result = parseBankSms(presetSms);
-    setParsedPreview(result);
-    setStatusMessage({
-      text: `Loaded preset: ${result.merchant} (₹${result.amount.toLocaleString()}). Tap "Commit to Phone Memory" below to log!`,
-      type: 'info',
-    });
-    setActiveTab('sms_parser');
-  };
-
-  const handleInstantPresetLog = (presetSms: string) => {
-    const result = processBankSms(presetSms);
-    setStatusMessage({
-      text: result.message,
-      type: result.success ? 'success' : 'error',
-    });
-  };
-
-  const handleTriggerLiveSpendRightAway = () => {
-    // Pick an authentic real-world payment preset
-    const presets = REAL_BANK_SMS_PRESETS.filter((p) => p.bank !== 'HDFC Bank (Credit)');
-    const sample = presets[Math.floor(Math.random() * presets.length)];
-    processBankSms(sample.sms);
-    onClose();
   };
 
   const handleImportStatement = () => {
@@ -112,7 +184,6 @@ export const BankSyncModal: React.FC<BankSyncModalProps> = ({ visible, onClose }
     let totalImportedAmount = 0;
 
     lines.forEach((line) => {
-      // Expecting: Date, Description, Amount
       const parts = line.split(',').map((p) => p.trim());
       if (parts.length >= 2) {
         const title = parts[1] || parts[0];
@@ -124,7 +195,7 @@ export const BankSyncModal: React.FC<BankSyncModalProps> = ({ visible, onClose }
             numAmt,
             undefined,
             'bank_sync',
-            `Imported from bank statement line: "${line}"`,
+            `Imported from statement: "${line}"`,
             true
           );
           importedCount++;
@@ -135,13 +206,13 @@ export const BankSyncModal: React.FC<BankSyncModalProps> = ({ visible, onClose }
 
     if (importedCount > 0) {
       setStatusMessage({
-        text: `✅ Imported ${importedCount} transactions (Total ₹${totalImportedAmount.toLocaleString()}) into phone storage. Safe budget recalculated!`,
+        text: `✅ Imported ${importedCount} transactions (Total ₹${totalImportedAmount.toLocaleString()}) into phone storage!`,
         type: 'success',
       });
       setStatementText('');
     } else {
       setStatusMessage({
-        text: 'Could not parse any valid lines. Format each line as: Date, Description, Amount',
+        text: 'Could not parse any valid lines. Format: Date, Description, Amount',
         type: 'error',
       });
     }
@@ -155,14 +226,14 @@ export const BankSyncModal: React.FC<BankSyncModalProps> = ({ visible, onClose }
           <View style={styles.header}>
             <View>
               <View style={styles.titleRow}>
-                <Text style={styles.title}>Pure Bank Records</Text>
+                <Text style={styles.title}>Direct Bank Feed</Text>
                 <View style={styles.liveBadge}>
                   <View style={styles.liveDot} />
-                  <Text style={styles.liveBadgeText}>ON-DEVICE SYNC</Text>
+                  <Text style={styles.liveBadgeText}>RBI ACCOUNT AGGREGATOR</Text>
                 </View>
               </View>
               <Text style={styles.subtitle}>
-                Auto-parse real bank SMS, UPI feeds & calculate daily limit
+                Pure bank account sync • Live transactions & real balance
               </Text>
             </View>
             <TouchableOpacity onPress={onClose} style={styles.closeBtn} activeOpacity={0.7}>
@@ -170,51 +241,45 @@ export const BankSyncModal: React.FC<BankSyncModalProps> = ({ visible, onClose }
             </TouchableOpacity>
           </View>
 
-          {/* Connected Bank Info Strip */}
-          <View style={styles.bankStrip}>
-            <View style={styles.bankStripLeft}>
-              <View style={styles.bankLogoCircle}>
-                <Text style={styles.bankLogoEmoji}>🏦</Text>
-              </View>
-              <View>
-                <Text style={styles.bankStripTitle}>{profile.connectedBankName}</Text>
-                <Text style={styles.bankStripSub}>On-Device Smart Parser • 100% Private</Text>
-              </View>
-            </View>
-            <View style={styles.bankStripBadge}>
-              <Text style={styles.bankStripBadgeText}>REAL FEED</Text>
-            </View>
-          </View>
-
           {/* Segmented Tab Switcher */}
           <View style={styles.tabsContainer}>
+            <TouchableOpacity
+              style={[styles.tabBtn, activeTab === 'direct_accounts' && styles.tabBtnActive]}
+              onPress={() => setActiveTab('direct_accounts')}
+              activeOpacity={0.8}
+            >
+              <Text style={[styles.tabBtnText, activeTab === 'direct_accounts' && styles.tabBtnTextActive]}>
+                🏦 Linked Accounts ({connectedAccounts.length})
+              </Text>
+            </TouchableOpacity>
+
+            <TouchableOpacity
+              style={[styles.tabBtn, activeTab === 'add_bank' && styles.tabBtnActive]}
+              onPress={() => setActiveTab('add_bank')}
+              activeOpacity={0.8}
+            >
+              <Text style={[styles.tabBtnText, activeTab === 'add_bank' && styles.tabBtnTextActive]}>
+                ➕ Add Bank
+              </Text>
+            </TouchableOpacity>
+
+            <TouchableOpacity
+              style={[styles.tabBtn, activeTab === 'custom_api' && styles.tabBtnActive]}
+              onPress={() => setActiveTab('custom_api')}
+              activeOpacity={0.8}
+            >
+              <Text style={[styles.tabBtnText, activeTab === 'custom_api' && styles.tabBtnTextActive]}>
+                ⚙️ Custom API
+              </Text>
+            </TouchableOpacity>
+
             <TouchableOpacity
               style={[styles.tabBtn, activeTab === 'sms_parser' && styles.tabBtnActive]}
               onPress={() => setActiveTab('sms_parser')}
               activeOpacity={0.8}
             >
               <Text style={[styles.tabBtnText, activeTab === 'sms_parser' && styles.tabBtnTextActive]}>
-                📥 Live SMS Parser
-              </Text>
-            </TouchableOpacity>
-
-            <TouchableOpacity
-              style={[styles.tabBtn, activeTab === 'bank_presets' && styles.tabBtnActive]}
-              onPress={() => setActiveTab('bank_presets')}
-              activeOpacity={0.8}
-            >
-              <Text style={[styles.tabBtnText, activeTab === 'bank_presets' && styles.tabBtnTextActive]}>
-                ⚡ Bank Presets
-              </Text>
-            </TouchableOpacity>
-
-            <TouchableOpacity
-              style={[styles.tabBtn, activeTab === 'statement_import' && styles.tabBtnActive]}
-              onPress={() => setActiveTab('statement_import')}
-              activeOpacity={0.8}
-            >
-              <Text style={[styles.tabBtnText, activeTab === 'statement_import' && styles.tabBtnTextActive]}>
-                📄 Statement / CSV
+                📥 SMS/CSV
               </Text>
             </TouchableOpacity>
           </View>
@@ -243,30 +308,264 @@ export const BankSyncModal: React.FC<BankSyncModalProps> = ({ visible, onClose }
           )}
 
           <ScrollView showsVerticalScrollIndicator={false} contentContainerStyle={styles.scrollContent}>
-            {/* TAB 1: LIVE SMS PARSER */}
-            {activeTab === 'sms_parser' && (
+            {/* TAB 1: DIRECT LINKED BANK ACCOUNTS */}
+            {activeTab === 'direct_accounts' && (
               <View>
-                <Text style={styles.sectionLabel}>PASTE REAL BANK SMS OR UPI NOTIFICATION</Text>
-                <Text style={styles.sectionHelp}>
-                  Copy any SMS from HDFC, SBI, ICICI, Axis, Kotak, GPay, or Paytm and paste it below. SpendWise will extract real data and calculate your daily budget automatically:
+                {connectedAccounts.length === 0 ? (
+                  <View style={styles.emptyAccountsCard}>
+                    <Text style={styles.emptyEmoji}>🏦</Text>
+                    <Text style={styles.emptyTitle}>No Bank Account Added Yet</Text>
+                    <Text style={styles.emptySub}>
+                      Link your HDFC, SBI, ICICI, or Axis bank account to pull real live transactions and balance automatically.
+                    </Text>
+                    <TouchableOpacity
+                      style={styles.addAccountNowBtn}
+                      onPress={() => setActiveTab('add_bank')}
+                      activeOpacity={0.85}
+                    >
+                      <Text style={styles.addAccountNowText}>+ Link Bank Account via OTP</Text>
+                    </TouchableOpacity>
+                  </View>
+                ) : (
+                  <>
+                    <View style={styles.syncAllHeaderRow}>
+                      <Text style={styles.sectionHeading}>DIRECT BANK ACCOUNT FEEDS</Text>
+                      <TouchableOpacity
+                        style={styles.refreshSyncBtn}
+                        onPress={() => handleSyncDirectFeed()}
+                        disabled={isSyncing}
+                        activeOpacity={0.8}
+                      >
+                        {isSyncing ? (
+                          <ActivityIndicator size="small" color="#38BDF8" />
+                        ) : (
+                          <Text style={styles.refreshSyncText}>⚡ Sync Live Feed</Text>
+                        )}
+                      </TouchableOpacity>
+                    </View>
+
+                    {connectedAccounts.map((account) => (
+                      <View key={account.id} style={styles.accountCard}>
+                        <View style={styles.accountTopRow}>
+                          <View style={styles.accountLogoCircle}>
+                            <Text style={styles.accountLogoEmoji}>🏦</Text>
+                          </View>
+                          <View style={styles.accountInfoCol}>
+                            <View style={styles.accountTitleRow}>
+                              <Text style={styles.accountBankName}>{account.bankName}</Text>
+                              <View style={styles.accountActiveBadge}>
+                                <View style={styles.activeDot} />
+                                <Text style={styles.activeBadgeText}>ACTIVE LINK</Text>
+                              </View>
+                            </View>
+                            <Text style={styles.accountMaskedNumber}>
+                              {account.accountType} A/C {account.accountNumberMasked}
+                            </Text>
+                          </View>
+                        </View>
+
+                        <View style={styles.balanceDivider} />
+
+                        <View style={styles.accountBalanceRow}>
+                          <View>
+                            <Text style={styles.balanceLabel}>VERIFIED BANK BALANCE</Text>
+                            <Text style={styles.balanceValue}>
+                              ₹{account.balance.toLocaleString()}
+                            </Text>
+                          </View>
+                          <TouchableOpacity
+                            style={styles.singleSyncBtn}
+                            onPress={() => handleSyncDirectFeed(account.id)}
+                            disabled={isSyncing}
+                            activeOpacity={0.8}
+                          >
+                            <Text style={styles.singleSyncBtnText}>
+                              {isSyncing ? 'Fetching...' : '⚡ Sync Live'}
+                            </Text>
+                          </TouchableOpacity>
+                        </View>
+
+                        <View style={styles.accountMetaRow}>
+                          <Text style={styles.consentText}>Consent: {account.consentId}</Text>
+                          <TouchableOpacity
+                            onPress={() => disconnectBankAccount(account.id)}
+                            activeOpacity={0.7}
+                          >
+                            <Text style={styles.disconnectText}>Unlink</Text>
+                          </TouchableOpacity>
+                        </View>
+                      </View>
+                    ))}
+
+                    <TouchableOpacity
+                      style={styles.addNewAccountBtn}
+                      onPress={() => setActiveTab('add_bank')}
+                      activeOpacity={0.8}
+                    >
+                      <Text style={styles.addNewAccountText}>+ Add Another Bank Account</Text>
+                    </TouchableOpacity>
+                  </>
+                )}
+              </View>
+            )}
+
+            {/* TAB 2: ADD BANK ACCOUNT (RBI ACCOUNT AGGREGATOR FLOW) */}
+            {activeTab === 'add_bank' && (
+              <View>
+                <Text style={styles.sectionHeading}>STEP 1: SELECT YOUR BANK</Text>
+                <View style={styles.bankGrid}>
+                  {SUPPORTED_BANKS.map((b) => {
+                    const isSelected = selectedBank.code === b.code;
+                    return (
+                      <TouchableOpacity
+                        key={b.code}
+                        style={[styles.bankChoiceBtn, isSelected && styles.bankChoiceBtnSelected]}
+                        onPress={() => setSelectedBank(b)}
+                        activeOpacity={0.8}
+                      >
+                        <Text style={styles.bankChoiceIcon}>{b.icon}</Text>
+                        <Text
+                          style={[
+                            styles.bankChoiceName,
+                            isSelected && styles.bankChoiceNameSelected,
+                          ]}
+                          numberOfLines={1}
+                        >
+                          {b.shortName}
+                        </Text>
+                      </TouchableOpacity>
+                    );
+                  })}
+                </View>
+
+                {otpStage === 'phone' ? (
+                  <View style={styles.formContainer}>
+                    <Text style={styles.sectionHeading}>
+                      STEP 2: ENTER MOBILE NUMBER LINKED TO {selectedBank.shortName.toUpperCase()}
+                    </Text>
+                    <View style={styles.phoneInputRow}>
+                      <View style={styles.countryCodeBox}>
+                        <Text style={styles.countryCodeText}>🇮🇳 +91</Text>
+                      </View>
+                      <TextInput
+                        style={styles.phoneInput}
+                        value={phoneNumber}
+                        onChangeText={setPhoneNumber}
+                        keyboardType="phone-pad"
+                        placeholder="10-digit mobile number"
+                        placeholderTextColor="#64748B"
+                        maxLength={10}
+                      />
+                    </View>
+
+                    <TouchableOpacity
+                      style={styles.requestOtpBtn}
+                      onPress={handleRequestOtp}
+                      activeOpacity={0.85}
+                    >
+                      <Text style={styles.requestOtpText}>
+                        Request Bank OTP via Account Aggregator →
+                      </Text>
+                    </TouchableOpacity>
+                  </View>
+                ) : (
+                  <View style={styles.formContainer}>
+                    <Text style={styles.sectionHeading}>
+                      STEP 3: ENTER 6-DIGIT OTP FROM {selectedBank.shortName.toUpperCase()}
+                    </Text>
+                    <Text style={styles.otpNotice}>
+                      Sent to +91 {phoneNumber} via RBI Account Aggregator. (Demo OTP: 123456)
+                    </Text>
+
+                    <TextInput
+                      style={styles.otpInput}
+                      value={otpInput}
+                      onChangeText={setOtpInput}
+                      keyboardType="number-pad"
+                      placeholder="123456"
+                      placeholderTextColor="#64748B"
+                      maxLength={6}
+                    />
+
+                    <TouchableOpacity
+                      style={styles.verifyLinkBtn}
+                      onPress={handleVerifyOtpAndLink}
+                      disabled={isConnecting}
+                      activeOpacity={0.85}
+                    >
+                      {isConnecting ? (
+                        <ActivityIndicator color="#FFFFFF" />
+                      ) : (
+                        <Text style={styles.verifyLinkText}>
+                          ✓ Verify & Link {selectedBank.shortName} Account
+                        </Text>
+                      )}
+                    </TouchableOpacity>
+
+                    <TouchableOpacity
+                      style={styles.changePhoneBtn}
+                      onPress={() => setOtpStage('phone')}
+                      activeOpacity={0.7}
+                    >
+                      <Text style={styles.changePhoneText}>← Change Mobile Number</Text>
+                    </TouchableOpacity>
+                  </View>
+                )}
+              </View>
+            )}
+
+            {/* TAB 3: CUSTOM BANK API / WEBHOOK CONFIGURATION */}
+            {activeTab === 'custom_api' && (
+              <View style={styles.formContainer}>
+                <Text style={styles.sectionHeading}>CONNECT CUSTOM BANK API / WEBHOOK</Text>
+                <Text style={styles.sectionSub}>
+                  If you have a backend server or Account Aggregator webhook (e.g. Setu, Finvu, or private banking API), enter the endpoint below. SpendWise will fetch real transaction JSON directly:
                 </Text>
 
+                <Text style={styles.inputLabel}>BANK API ENDPOINT URL</Text>
+                <TextInput
+                  style={styles.textInputBox}
+                  placeholder="https://api.yourbank.com/v1/feed"
+                  placeholderTextColor="#64748B"
+                  value={apiUrl}
+                  onChangeText={setApiUrl}
+                  autoCapitalize="none"
+                  autoCorrect={false}
+                />
+
+                <Text style={styles.inputLabel}>API KEY / BEARER TOKEN (OPTIONAL)</Text>
+                <TextInput
+                  style={styles.textInputBox}
+                  placeholder="Bearer token or secret key"
+                  placeholderTextColor="#64748B"
+                  value={apiKey}
+                  onChangeText={setApiKey}
+                  autoCapitalize="none"
+                  autoCorrect={false}
+                  secureTextEntry
+                />
+
                 <TouchableOpacity
-                  style={styles.liveTestTriggerBtn}
-                  onPress={handleTriggerLiveSpendRightAway}
+                  style={styles.saveApiBtn}
+                  onPress={handleSaveCustomApi}
                   activeOpacity={0.85}
                 >
-                  <Text style={styles.liveTestTriggerIcon}>⚡</Text>
-                  <View style={styles.liveTestTriggerTextCol}>
-                    <Text style={styles.liveTestTriggerTitle}>
-                      Test Instant Live Spend Right Now
-                    </Text>
-                    <Text style={styles.liveTestTriggerSub}>
-                      Fires a live debit & shows top drop-down notification banner instantly
-                    </Text>
-                  </View>
+                  <Text style={styles.saveApiBtnText}>💾 Save API Configuration</Text>
                 </TouchableOpacity>
 
+                <View style={styles.apiSpecCard}>
+                  <Text style={styles.apiSpecTitle}>EXPECTED JSON RESPONSE FORMAT</Text>
+                  <Text style={styles.apiSpecCode}>
+                    {`{\n  "balance": 42500,\n  "transactions": [\n    {\n      "id": "tx-1",\n      "title": "Swiggy",\n      "amount": 349,\n      "category": "Food",\n      "timestamp": "2026-10-24T12:00:00Z"\n    }\n  ]\n}`}
+                  </Text>
+                </View>
+              </View>
+            )}
+
+            {/* TAB 4: SMS PARSER & BATCH STATEMENT */}
+            {activeTab === 'sms_parser' && (
+              <View>
+                <Text style={styles.sectionHeading}>PASTE BANK SMS OR NOTIFICATION</Text>
                 <TextInput
                   style={styles.smsInputBox}
                   placeholder="e.g. Rs. 450.00 debited from A/C **1234 on 24-OCT-26 to VPA swiggy@icici (UPI Ref no 4298102384). Avl bal: Rs 34,200.00"
@@ -281,7 +580,7 @@ export const BankSyncModal: React.FC<BankSyncModalProps> = ({ visible, onClose }
                     }
                   }}
                   multiline
-                  numberOfLines={4}
+                  numberOfLines={3}
                 />
 
                 <View style={styles.parserActionsRow}>
@@ -290,16 +589,14 @@ export const BankSyncModal: React.FC<BankSyncModalProps> = ({ visible, onClose }
                     onPress={() => handleParseSms()}
                     activeOpacity={0.8}
                   >
-                    <Text style={styles.parseExtractText}>🔍 Inspect & Auto-Detect</Text>
+                    <Text style={styles.parseExtractText}>🔍 Inspect & Detect</Text>
                   </TouchableOpacity>
-
                   {smsInput.length > 0 && (
                     <TouchableOpacity
                       style={styles.clearBtn}
                       onPress={() => {
                         setSmsInput('');
                         setParsedPreview(null);
-                        setStatusMessage(null);
                       }}
                       activeOpacity={0.7}
                     >
@@ -308,173 +605,46 @@ export const BankSyncModal: React.FC<BankSyncModalProps> = ({ visible, onClose }
                   )}
                 </View>
 
-                {/* Extracted Details Card */}
-                {parsedPreview && (
+                {parsedPreview && parsedPreview.type !== 'otp' && (
                   <View style={styles.previewCard}>
-                    <View style={styles.previewTopRow}>
-                      <View
-                        style={[
-                          styles.typeBadge,
-                          parsedPreview.type === 'debit'
-                            ? styles.badgeDebit
-                            : parsedPreview.type === 'credit'
-                            ? styles.badgeCredit
-                            : styles.badgeOtp,
-                        ]}
-                      >
-                        <Text style={styles.typeBadgeText}>
-                          {parsedPreview.type === 'debit'
-                            ? '🔴 DEBIT (EXPENSE)'
-                            : parsedPreview.type === 'credit'
-                            ? '🟢 CREDIT (INCOME)'
-                            : '🟡 OTP / SECURITY'}
-                        </Text>
-                      </View>
-                      <Text style={styles.bankNameTag}>{parsedPreview.bankName}</Text>
-                    </View>
-
-                    {parsedPreview.type !== 'otp' && (
-                      <>
-                        <View style={styles.previewAmountRow}>
-                          <Text style={styles.previewAmountLabel}>EXTRACTED AMOUNT</Text>
-                          <Text style={styles.previewAmountVal}>
-                            ₹{parsedPreview.amount.toLocaleString()}
-                          </Text>
-                        </View>
-
-                        <View style={styles.previewDetailGrid}>
-                          <View style={styles.previewDetailItem}>
-                            <Text style={styles.detailItemKey}>Merchant / Destination</Text>
-                            <Text style={styles.detailItemVal}>{parsedPreview.merchant}</Text>
-                          </View>
-
-                          <View style={styles.previewDetailItem}>
-                            <Text style={styles.detailItemKey}>Category</Text>
-                            <View style={styles.catPill}>
-                              <Text style={styles.catPillIcon}>
-                                {CATEGORIES[parsedPreview.category]?.icon || '📦'}
-                              </Text>
-                              <Text style={styles.catPillText}>
-                                {CATEGORIES[parsedPreview.category]?.label || parsedPreview.category}
-                              </Text>
-                            </View>
-                          </View>
-
-                          {parsedPreview.accountEnding && (
-                            <View style={styles.previewDetailItem}>
-                              <Text style={styles.detailItemKey}>Account / Card Ending</Text>
-                              <Text style={styles.detailItemVal}>**{parsedPreview.accountEnding}</Text>
-                            </View>
-                          )}
-
-                          {parsedPreview.referenceNumber && (
-                            <View style={styles.previewDetailItem}>
-                              <Text style={styles.detailItemKey}>UPI / Txn Ref</Text>
-                              <Text style={styles.detailItemVal}>{parsedPreview.referenceNumber}</Text>
-                            </View>
-                          )}
-
-                          {parsedPreview.balanceAfter !== undefined && (
-                            <View style={styles.previewDetailItem}>
-                              <Text style={styles.detailItemKey}>Account Balance</Text>
-                              <Text style={[styles.detailItemVal, { color: '#38BDF8', fontWeight: '800' }]}>
-                                ₹{parsedPreview.balanceAfter.toLocaleString()}
-                              </Text>
-                            </View>
-                          )}
-                        </View>
-
-                        <TouchableOpacity
-                          style={styles.commitBtn}
-                          onPress={handleCommitParsedSms}
-                          activeOpacity={0.85}
-                        >
-                          <Text style={styles.commitBtnText}>
-                            💾 Log to Phone Storage & Recalculate Safe Budget
-                          </Text>
-                        </TouchableOpacity>
-                      </>
-                    )}
+                    <Text style={styles.previewAmount}>
+                      ₹{parsedPreview.amount.toLocaleString()} at {parsedPreview.merchant}
+                    </Text>
+                    <TouchableOpacity
+                      style={styles.commitBtn}
+                      onPress={handleCommitParsedSms}
+                      activeOpacity={0.85}
+                    >
+                      <Text style={styles.commitBtnText}>💾 Log & Recalculate Limit</Text>
+                    </TouchableOpacity>
                   </View>
                 )}
-              </View>
-            )}
 
-            {/* TAB 2: BANK PRESETS */}
-            {activeTab === 'bank_presets' && (
-              <View>
-                <Text style={styles.sectionLabel}>AUTHENTIC INDIAN BANK NOTIFICATIONS</Text>
-                <Text style={styles.sectionHelp}>
-                  Tap any real-world bank format to test instant extraction and budget adjustment:
+                <Text style={[styles.sectionHeading, { marginTop: 16 }]}>
+                  BATCH IMPORT BANK STATEMENT (CSV)
                 </Text>
-
-                {REAL_BANK_SMS_PRESETS.map((item) => (
-                  <View key={item.id} style={styles.presetCard}>
-                    <View style={styles.presetTopRow}>
-                      <View style={styles.presetBankBadge}>
-                        <Text style={styles.presetBankText}>{item.bank}</Text>
-                      </View>
-                      <Text style={styles.presetAmountText}>₹{item.amount.toLocaleString()}</Text>
-                    </View>
-
-                    <Text style={styles.presetMerchantText}>{item.merchant}</Text>
-                    <Text style={styles.presetSmsText}>{item.sms}</Text>
-
-                    <View style={styles.presetBtnRow}>
-                      <TouchableOpacity
-                        style={styles.presetInspectBtn}
-                        onPress={() => handleSelectPreset(item.sms)}
-                        activeOpacity={0.7}
-                      >
-                        <Text style={styles.presetInspectText}>Inspect in Parser</Text>
-                      </TouchableOpacity>
-
-                      <TouchableOpacity
-                        style={styles.presetInstantLogBtn}
-                        onPress={() => handleInstantPresetLog(item.sms)}
-                        activeOpacity={0.8}
-                      >
-                        <Text style={styles.presetInstantLogText}>⚡ Instant Log & Calculate</Text>
-                      </TouchableOpacity>
-                    </View>
-                  </View>
-                ))}
-              </View>
-            )}
-
-            {/* TAB 3: STATEMENT / CSV IMPORT */}
-            {activeTab === 'statement_import' && (
-              <View>
-                <Text style={styles.sectionLabel}>IMPORT BANK STATEMENT (CSV / LINES)</Text>
-                <Text style={styles.sectionHelp}>
-                  Paste statement rows (e.g. from HDFC, SBI, or ICICI statement). Each line formatted as: "Date, Description, Amount":
-                </Text>
-
                 <TextInput
-                  style={[styles.smsInputBox, { height: 120 }]}
+                  style={[styles.smsInputBox, { height: 90 }]}
                   placeholder="Date, Description, Amount"
                   placeholderTextColor="#64748B"
                   value={statementText}
                   onChangeText={setStatementText}
                   multiline
-                  numberOfLines={6}
                 />
-
                 <TouchableOpacity
                   style={styles.importAllBtn}
                   onPress={handleImportStatement}
                   activeOpacity={0.85}
                 >
-                  <Text style={styles.importAllBtnText}>📥 Batch Import All Lines to Phone Memory</Text>
+                  <Text style={styles.importAllBtnText}>📥 Import Statement Lines to Storage</Text>
                 </TouchableOpacity>
               </View>
             )}
 
-            {/* Privacy & Engine Information Strip */}
-            <View style={styles.securityFooterCard}>
-              <Text style={styles.securityHeading}>🔒 100% PRIVATE ON-DEVICE BANK ENGINE</Text>
+            {/* Privacy Strip */}
+            <View style={styles.securityStrip}>
               <Text style={styles.securityText}>
-                SpendWise processes all bank notifications locally on your device using regular expressions and on-device natural language classification. Zero banking SMS texts, account numbers, or financial metrics ever leave your phone.
+                🔒 256-bit Read-Only Encryption • No banking passwords, UPI PINs, or credentials requested. Data stored 100% locally on your phone memory.
               </Text>
             </View>
 
@@ -523,21 +693,21 @@ const styles = StyleSheet.create({
     flexDirection: 'row',
     alignItems: 'center',
     gap: 5,
-    backgroundColor: 'rgba(16, 185, 129, 0.15)',
+    backgroundColor: 'rgba(56, 189, 248, 0.15)',
     paddingHorizontal: 8,
     paddingVertical: 3,
     borderRadius: 8,
     borderWidth: 1,
-    borderColor: '#10B981',
+    borderColor: '#38BDF8',
   },
   liveDot: {
     width: 6,
     height: 6,
     borderRadius: 3,
-    backgroundColor: '#10B981',
+    backgroundColor: '#38BDF8',
   },
   liveBadgeText: {
-    color: '#10B981',
+    color: '#38BDF8',
     fontSize: 9,
     fontWeight: '800',
   },
@@ -559,65 +729,16 @@ const styles = StyleSheet.create({
     fontSize: 14,
     fontWeight: 'bold',
   },
-  bankStrip: {
-    backgroundColor: '#1E293B',
-    borderRadius: 14,
-    padding: 12,
-    flexDirection: 'row',
-    alignItems: 'center',
-    justifyContent: 'space-between',
-    marginBottom: 14,
-    borderWidth: 1,
-    borderColor: '#334155',
-  },
-  bankStripLeft: {
-    flexDirection: 'row',
-    alignItems: 'center',
-    gap: 10,
-  },
-  bankLogoCircle: {
-    width: 38,
-    height: 38,
-    borderRadius: 10,
-    backgroundColor: '#0F172A',
-    justifyContent: 'center',
-    alignItems: 'center',
-  },
-  bankLogoEmoji: {
-    fontSize: 20,
-  },
-  bankStripTitle: {
-    color: '#F8FAFC',
-    fontSize: 14,
-    fontWeight: '700',
-  },
-  bankStripSub: {
-    color: '#94A3B8',
-    fontSize: 11,
-  },
-  bankStripBadge: {
-    backgroundColor: '#0F172A',
-    paddingHorizontal: 8,
-    paddingVertical: 4,
-    borderRadius: 6,
-    borderWidth: 1,
-    borderColor: '#475569',
-  },
-  bankStripBadgeText: {
-    color: '#38BDF8',
-    fontSize: 10,
-    fontWeight: '800',
-  },
   tabsContainer: {
     flexDirection: 'row',
     backgroundColor: '#1E293B',
     borderRadius: 12,
-    padding: 4,
+    padding: 3,
     marginBottom: 14,
   },
   tabBtn: {
     flex: 1,
-    paddingVertical: 9,
+    paddingVertical: 8,
     alignItems: 'center',
     borderRadius: 8,
   },
@@ -626,7 +747,7 @@ const styles = StyleSheet.create({
   },
   tabBtnText: {
     color: '#94A3B8',
-    fontSize: 11,
+    fontSize: 10,
     fontWeight: '700',
   },
   tabBtnTextActive: {
@@ -669,310 +790,476 @@ const styles = StyleSheet.create({
   scrollContent: {
     paddingBottom: 24,
   },
-  sectionLabel: {
+  sectionHeading: {
     color: '#64748B',
+    fontSize: 10,
+    fontWeight: '800',
+    letterSpacing: 0.5,
+    marginBottom: 8,
+  },
+  sectionSub: {
+    color: '#94A3B8',
+    fontSize: 12,
+    lineHeight: 16,
+    marginBottom: 12,
+  },
+  syncAllHeaderRow: {
+    flexDirection: 'row',
+    justifyContent: 'space-between',
+    alignItems: 'center',
+    marginBottom: 8,
+  },
+  refreshSyncBtn: {
+    backgroundColor: 'rgba(56, 189, 248, 0.15)',
+    paddingHorizontal: 10,
+    paddingVertical: 5,
+    borderRadius: 8,
+    borderWidth: 1,
+    borderColor: '#38BDF8',
+  },
+  refreshSyncText: {
+    color: '#38BDF8',
     fontSize: 11,
+    fontWeight: '800',
+  },
+  accountCard: {
+    backgroundColor: '#1E293B',
+    borderRadius: 16,
+    padding: 16,
+    marginBottom: 12,
+    borderWidth: 1,
+    borderColor: '#334155',
+  },
+  accountTopRow: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 12,
+  },
+  accountLogoCircle: {
+    width: 44,
+    height: 44,
+    borderRadius: 12,
+    backgroundColor: '#0F172A',
+    justifyContent: 'center',
+    alignItems: 'center',
+  },
+  accountLogoEmoji: {
+    fontSize: 22,
+  },
+  accountInfoCol: {
+    flex: 1,
+  },
+  accountTitleRow: {
+    flexDirection: 'row',
+    justifyContent: 'space-between',
+    alignItems: 'center',
+  },
+  accountBankName: {
+    color: '#F8FAFC',
+    fontSize: 15,
+    fontWeight: '800',
+  },
+  accountActiveBadge: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 4,
+    backgroundColor: 'rgba(16, 185, 129, 0.15)',
+    paddingHorizontal: 6,
+    paddingVertical: 2,
+    borderRadius: 6,
+  },
+  activeDot: {
+    width: 5,
+    height: 5,
+    borderRadius: 2.5,
+    backgroundColor: '#10B981',
+  },
+  activeBadgeText: {
+    color: '#10B981',
+    fontSize: 9,
+    fontWeight: '800',
+  },
+  accountMaskedNumber: {
+    color: '#94A3B8',
+    fontSize: 12,
+    marginTop: 2,
+  },
+  balanceDivider: {
+    height: 1,
+    backgroundColor: '#334155',
+    marginVertical: 12,
+  },
+  accountBalanceRow: {
+    flexDirection: 'row',
+    justifyContent: 'space-between',
+    alignItems: 'center',
+  },
+  balanceLabel: {
+    color: '#64748B',
+    fontSize: 9,
+    fontWeight: '800',
+    letterSpacing: 0.5,
+  },
+  balanceValue: {
+    color: '#10B981',
+    fontSize: 20,
+    fontWeight: '900',
+    marginTop: 2,
+  },
+  singleSyncBtn: {
+    backgroundColor: '#4338CA',
+    paddingHorizontal: 12,
+    paddingVertical: 8,
+    borderRadius: 8,
+  },
+  singleSyncBtnText: {
+    color: '#FFFFFF',
+    fontSize: 12,
+    fontWeight: '800',
+  },
+  accountMetaRow: {
+    flexDirection: 'row',
+    justifyContent: 'space-between',
+    alignItems: 'center',
+    marginTop: 10,
+    paddingTop: 8,
+    borderTopWidth: 1,
+    borderColor: '#334155',
+  },
+  consentText: {
+    color: '#64748B',
+    fontSize: 10,
+  },
+  disconnectText: {
+    color: '#EF4444',
+    fontSize: 11,
+    fontWeight: '700',
+  },
+  addNewAccountBtn: {
+    backgroundColor: '#1E293B',
+    borderWidth: 1,
+    borderStyle: 'dashed',
+    borderColor: '#475569',
+    borderRadius: 12,
+    paddingVertical: 12,
+    alignItems: 'center',
+    marginBottom: 14,
+  },
+  addNewAccountText: {
+    color: '#38BDF8',
+    fontSize: 12,
+    fontWeight: '800',
+  },
+  emptyAccountsCard: {
+    backgroundColor: '#1E293B',
+    borderRadius: 16,
+    padding: 24,
+    alignItems: 'center',
+    marginBottom: 14,
+    borderWidth: 1,
+    borderColor: '#334155',
+  },
+  emptyEmoji: {
+    fontSize: 36,
+    marginBottom: 10,
+  },
+  emptyTitle: {
+    color: '#F8FAFC',
+    fontSize: 16,
+    fontWeight: '800',
+    marginBottom: 6,
+  },
+  emptySub: {
+    color: '#94A3B8',
+    fontSize: 12,
+    textAlign: 'center',
+    lineHeight: 17,
+    marginBottom: 16,
+  },
+  addAccountNowBtn: {
+    backgroundColor: '#4338CA',
+    paddingHorizontal: 18,
+    paddingVertical: 12,
+    borderRadius: 10,
+  },
+  addAccountNowText: {
+    color: '#FFFFFF',
+    fontSize: 13,
+    fontWeight: '800',
+  },
+  bankGrid: {
+    flexDirection: 'row',
+    flexWrap: 'wrap',
+    gap: 8,
+    marginBottom: 16,
+  },
+  bankChoiceBtn: {
+    width: '23%',
+    backgroundColor: '#1E293B',
+    borderRadius: 10,
+    paddingVertical: 10,
+    paddingHorizontal: 4,
+    alignItems: 'center',
+    borderWidth: 1.5,
+    borderColor: '#334155',
+  },
+  bankChoiceBtnSelected: {
+    borderColor: '#38BDF8',
+    backgroundColor: 'rgba(56, 189, 248, 0.1)',
+  },
+  bankChoiceIcon: {
+    fontSize: 20,
+    marginBottom: 4,
+  },
+  bankChoiceName: {
+    color: '#94A3B8',
+    fontSize: 10,
+    fontWeight: '700',
+  },
+  bankChoiceNameSelected: {
+    color: '#38BDF8',
+    fontWeight: '800',
+  },
+  formContainer: {
+    backgroundColor: '#1E293B',
+    borderRadius: 16,
+    padding: 16,
+    marginBottom: 14,
+    borderWidth: 1,
+    borderColor: '#334155',
+  },
+  phoneInputRow: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 8,
+    marginBottom: 14,
+  },
+  countryCodeBox: {
+    backgroundColor: '#0F172A',
+    borderRadius: 10,
+    paddingHorizontal: 10,
+    paddingVertical: 12,
+    borderWidth: 1,
+    borderColor: '#334155',
+  },
+  countryCodeText: {
+    color: '#F8FAFC',
+    fontSize: 13,
+    fontWeight: '700',
+  },
+  phoneInput: {
+    flex: 1,
+    backgroundColor: '#0F172A',
+    borderRadius: 10,
+    paddingHorizontal: 14,
+    paddingVertical: 12,
+    color: '#F8FAFC',
+    fontSize: 14,
+    borderWidth: 1,
+    borderColor: '#334155',
+  },
+  requestOtpBtn: {
+    backgroundColor: '#4338CA',
+    borderRadius: 10,
+    paddingVertical: 13,
+    alignItems: 'center',
+  },
+  requestOtpText: {
+    color: '#FFFFFF',
+    fontSize: 12,
+    fontWeight: '800',
+  },
+  otpNotice: {
+    color: '#94A3B8',
+    fontSize: 12,
+    marginBottom: 10,
+  },
+  otpInput: {
+    backgroundColor: '#0F172A',
+    borderRadius: 10,
+    paddingHorizontal: 14,
+    paddingVertical: 12,
+    color: '#F8FAFC',
+    fontSize: 18,
+    fontWeight: '800',
+    textAlign: 'center',
+    letterSpacing: 6,
+    borderWidth: 1,
+    borderColor: '#38BDF8',
+    marginBottom: 14,
+  },
+  verifyLinkBtn: {
+    backgroundColor: '#10B981',
+    borderRadius: 10,
+    paddingVertical: 13,
+    alignItems: 'center',
+    marginBottom: 8,
+  },
+  verifyLinkText: {
+    color: '#FFFFFF',
+    fontSize: 13,
+    fontWeight: '800',
+  },
+  changePhoneBtn: {
+    alignItems: 'center',
+    paddingVertical: 6,
+  },
+  changePhoneText: {
+    color: '#94A3B8',
+    fontSize: 11,
+    fontWeight: '600',
+  },
+  inputLabel: {
+    color: '#64748B',
+    fontSize: 10,
     fontWeight: '800',
     letterSpacing: 0.5,
     marginBottom: 4,
   },
-  sectionHelp: {
-    color: '#94A3B8',
-    fontSize: 12,
-    lineHeight: 16,
-    marginBottom: 10,
-  },
-  liveTestTriggerBtn: {
-    flexDirection: 'row',
-    alignItems: 'center',
-    gap: 12,
-    backgroundColor: 'rgba(56, 189, 248, 0.1)',
-    borderRadius: 14,
-    padding: 12,
-    marginBottom: 14,
-    borderWidth: 1.5,
-    borderColor: '#38BDF8',
-  },
-  liveTestTriggerIcon: {
-    fontSize: 22,
-  },
-  liveTestTriggerTextCol: {
-    flex: 1,
-  },
-  liveTestTriggerTitle: {
-    color: '#38BDF8',
-    fontSize: 13,
-    fontWeight: '800',
-  },
-  liveTestTriggerSub: {
-    color: '#94A3B8',
-    fontSize: 11,
-    marginTop: 2,
-  },
-  smsInputBox: {
-    backgroundColor: '#1E293B',
-    borderRadius: 14,
-    padding: 14,
+  textInputBox: {
+    backgroundColor: '#0F172A',
+    borderRadius: 10,
+    paddingHorizontal: 12,
+    paddingVertical: 10,
     color: '#F8FAFC',
     fontSize: 13,
     borderWidth: 1,
     borderColor: '#334155',
-    lineHeight: 19,
-    minHeight: 85,
-    textAlignVertical: 'top',
+    marginBottom: 12,
+  },
+  saveApiBtn: {
+    backgroundColor: '#4338CA',
+    borderRadius: 10,
+    paddingVertical: 12,
+    alignItems: 'center',
+    marginBottom: 14,
+  },
+  saveApiBtnText: {
+    color: '#FFFFFF',
+    fontSize: 12,
+    fontWeight: '800',
+  },
+  apiSpecCard: {
+    backgroundColor: '#0F172A',
+    borderRadius: 10,
+    padding: 12,
+    borderWidth: 1,
+    borderColor: '#334155',
+  },
+  apiSpecTitle: {
+    color: '#64748B',
+    fontSize: 10,
+    fontWeight: '800',
+    marginBottom: 6,
+  },
+  apiSpecCode: {
+    color: '#38BDF8',
+    fontFamily: 'monospace',
+    fontSize: 11,
+    lineHeight: 16,
+  },
+  smsInputBox: {
+    backgroundColor: '#1E293B',
+    borderRadius: 12,
+    padding: 12,
+    color: '#F8FAFC',
+    fontSize: 12,
+    borderWidth: 1,
+    borderColor: '#334155',
+    lineHeight: 17,
     marginBottom: 10,
   },
   parserActionsRow: {
     flexDirection: 'row',
     gap: 8,
-    marginBottom: 14,
+    marginBottom: 10,
   },
   parseExtractBtn: {
     flex: 1,
     backgroundColor: '#3B82F6',
-    paddingVertical: 12,
-    borderRadius: 12,
+    paddingVertical: 10,
+    borderRadius: 10,
     alignItems: 'center',
   },
   parseExtractText: {
     color: '#FFFFFF',
-    fontSize: 13,
+    fontSize: 12,
     fontWeight: '700',
   },
   clearBtn: {
     backgroundColor: '#1E293B',
-    paddingHorizontal: 16,
-    paddingVertical: 12,
-    borderRadius: 12,
+    paddingHorizontal: 14,
+    paddingVertical: 10,
+    borderRadius: 10,
     borderWidth: 1,
     borderColor: '#334155',
     alignItems: 'center',
   },
   clearBtnText: {
     color: '#94A3B8',
-    fontSize: 13,
-    fontWeight: '600',
+    fontSize: 12,
   },
   previewCard: {
     backgroundColor: '#1E293B',
-    borderRadius: 16,
-    padding: 16,
+    borderRadius: 12,
+    padding: 12,
     borderWidth: 1,
     borderColor: '#38BDF8',
-    marginBottom: 14,
-  },
-  previewTopRow: {
-    flexDirection: 'row',
-    justifyContent: 'space-between',
-    alignItems: 'center',
     marginBottom: 12,
   },
-  typeBadge: {
-    paddingHorizontal: 10,
-    paddingVertical: 4,
-    borderRadius: 8,
-  },
-  badgeDebit: {
-    backgroundColor: 'rgba(239, 68, 68, 0.2)',
-  },
-  badgeCredit: {
-    backgroundColor: 'rgba(16, 185, 129, 0.2)',
-  },
-  badgeOtp: {
-    backgroundColor: 'rgba(234, 179, 8, 0.2)',
-  },
-  typeBadgeText: {
+  previewAmount: {
     color: '#F8FAFC',
-    fontSize: 10,
+    fontSize: 16,
     fontWeight: '800',
-  },
-  bankNameTag: {
-    color: '#94A3B8',
-    fontSize: 12,
-    fontWeight: '700',
-  },
-  previewAmountRow: {
-    marginBottom: 12,
-    paddingBottom: 10,
-    borderBottomWidth: 1,
-    borderColor: '#334155',
-  },
-  previewAmountLabel: {
-    color: '#64748B',
-    fontSize: 10,
-    fontWeight: '800',
-    letterSpacing: 0.5,
-  },
-  previewAmountVal: {
-    color: '#F8FAFC',
-    fontSize: 28,
-    fontWeight: '900',
-    marginTop: 2,
-  },
-  previewDetailGrid: {
-    gap: 8,
-    marginBottom: 16,
-  },
-  previewDetailItem: {
-    flexDirection: 'row',
-    justifyContent: 'space-between',
-    alignItems: 'center',
-  },
-  detailItemKey: {
-    color: '#94A3B8',
-    fontSize: 12,
-  },
-  detailItemVal: {
-    color: '#F8FAFC',
-    fontSize: 12,
-    fontWeight: '700',
-  },
-  catPill: {
-    flexDirection: 'row',
-    alignItems: 'center',
-    gap: 5,
-    backgroundColor: '#0F172A',
-    paddingHorizontal: 8,
-    paddingVertical: 3,
-    borderRadius: 6,
-  },
-  catPillIcon: {
-    fontSize: 12,
-  },
-  catPillText: {
-    color: '#F8FAFC',
-    fontSize: 11,
-    fontWeight: '700',
+    marginBottom: 8,
   },
   commitBtn: {
     backgroundColor: '#10B981',
-    paddingVertical: 14,
-    borderRadius: 12,
+    paddingVertical: 10,
+    borderRadius: 8,
     alignItems: 'center',
   },
   commitBtnText: {
     color: '#FFFFFF',
-    fontSize: 13,
-    fontWeight: '800',
-  },
-  presetCard: {
-    backgroundColor: '#1E293B',
-    borderRadius: 14,
-    padding: 14,
-    marginBottom: 10,
-    borderWidth: 1,
-    borderColor: '#334155',
-  },
-  presetTopRow: {
-    flexDirection: 'row',
-    justifyContent: 'space-between',
-    alignItems: 'center',
-    marginBottom: 6,
-  },
-  presetBankBadge: {
-    backgroundColor: '#0F172A',
-    paddingHorizontal: 8,
-    paddingVertical: 3,
-    borderRadius: 6,
-    borderWidth: 1,
-    borderColor: '#475569',
-  },
-  presetBankText: {
-    color: '#94A3B8',
-    fontSize: 11,
-    fontWeight: '700',
-  },
-  presetAmountText: {
-    color: '#F8FAFC',
-    fontSize: 15,
-    fontWeight: '800',
-  },
-  presetMerchantText: {
-    color: '#38BDF8',
-    fontSize: 13,
-    fontWeight: '700',
-    marginBottom: 4,
-  },
-  presetSmsText: {
-    color: '#94A3B8',
-    fontSize: 11,
-    lineHeight: 15,
-    marginBottom: 10,
-    fontStyle: 'italic',
-  },
-  presetBtnRow: {
-    flexDirection: 'row',
-    gap: 8,
-  },
-  presetInspectBtn: {
-    flex: 1,
-    backgroundColor: '#0F172A',
-    paddingVertical: 9,
-    borderRadius: 8,
-    alignItems: 'center',
-    borderWidth: 1,
-    borderColor: '#475569',
-  },
-  presetInspectText: {
-    color: '#CBD5E1',
-    fontSize: 11,
-    fontWeight: '700',
-  },
-  presetInstantLogBtn: {
-    flex: 1.3,
-    backgroundColor: '#4338CA',
-    paddingVertical: 9,
-    borderRadius: 8,
-    alignItems: 'center',
-  },
-  presetInstantLogText: {
-    color: '#FFFFFF',
-    fontSize: 11,
+    fontSize: 12,
     fontWeight: '800',
   },
   importAllBtn: {
     backgroundColor: '#10B981',
-    paddingVertical: 14,
-    borderRadius: 12,
+    paddingVertical: 12,
+    borderRadius: 10,
     alignItems: 'center',
-    marginBottom: 14,
+    marginBottom: 12,
   },
   importAllBtnText: {
     color: '#FFFFFF',
-    fontSize: 13,
+    fontSize: 12,
     fontWeight: '800',
   },
-  securityFooterCard: {
+  securityStrip: {
     backgroundColor: '#1E293B',
-    borderRadius: 14,
-    padding: 14,
-    marginVertical: 12,
+    borderRadius: 12,
+    padding: 12,
+    marginVertical: 10,
     borderWidth: 1,
     borderColor: '#334155',
   },
-  securityHeading: {
-    color: '#64748B',
-    fontSize: 10,
-    fontWeight: '800',
-    letterSpacing: 0.5,
-    marginBottom: 6,
-  },
   securityText: {
     color: '#94A3B8',
-    fontSize: 11,
-    lineHeight: 16,
+    fontSize: 10,
+    lineHeight: 15,
   },
   doneBtn: {
     backgroundColor: '#1E293B',
-    paddingVertical: 14,
-    borderRadius: 14,
+    paddingVertical: 12,
+    borderRadius: 12,
     alignItems: 'center',
     borderWidth: 1,
     borderColor: '#334155',
   },
   doneBtnText: {
     color: '#94A3B8',
-    fontSize: 13,
+    fontSize: 12,
     fontWeight: '700',
   },
 });

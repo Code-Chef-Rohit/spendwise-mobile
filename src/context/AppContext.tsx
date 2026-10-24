@@ -6,6 +6,7 @@ import {
   CategoryBreakdownItem, 
   CategoryType, 
   ChatMessage, 
+  ConnectedBankAccount,
   DailySpendingSummary,
   SavingsGoal, 
   Transaction, 
@@ -27,6 +28,7 @@ import { generateCoachResponse } from '../utils/aiCoach';
 import { MOCK_MERCHANTS } from '../constants/categories';
 import { parseBankSms, ParsedBankSms } from '../utils/bankSmsParser';
 import { LiveBankAlert } from '../components/LiveBankNotificationBanner';
+import { fetchDirectBankFeed, simulateAccountDiscovery } from '../utils/directBankEngine';
 
 interface AppContextType {
   isLoadingApp: boolean;
@@ -82,6 +84,20 @@ interface AppContextType {
     transaction?: Transaction;
     message: string;
   };
+  connectedAccounts: ConnectedBankAccount[];
+  connectBankAccount: (
+    bankName: string,
+    bankCode: string,
+    phone: string
+  ) => Promise<{ success: boolean; account?: ConnectedBankAccount; message: string }>;
+  disconnectBankAccount: (accountId: string) => void;
+  syncDirectBankFeed: (accountId?: string) => Promise<{
+    success: boolean;
+    count: number;
+    totalAmount: number;
+    message: string;
+  }>;
+  setCustomBankApi: (url: string, apiKey?: string) => void;
 }
 
 const AppContext = createContext<AppContextType | undefined>(undefined);
@@ -92,6 +108,7 @@ const STORAGE_KEYS = {
   GOALS: '@spendwise_goals_v2',
   BADGES: '@spendwise_badges_v2',
   MESSAGES: '@spendwise_messages_v2',
+  ACCOUNTS: '@spendwise_accounts_v2',
 };
 
 export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children }) => {
@@ -106,6 +123,9 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
   const [addExpenseModalVisible, setAddExpenseModalVisible] = useState(false);
   const [bankSyncModalVisible, setBankSyncModalVisible] = useState(false);
   const [liveBankAlert, setLiveBankAlert] = useState<LiveBankAlert | null>(null);
+  const [connectedAccounts, setConnectedAccounts] = useState<ConnectedBankAccount[]>(
+    INITIAL_USER_PROFILE.connectedAccounts || []
+  );
 
   const [chatMessages, setChatMessages] = useState<ChatMessage[]>([
     {
@@ -120,20 +140,30 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
   useEffect(() => {
     async function loadStoredData() {
       try {
-        const [savedProfile, savedTx, savedGoals, savedBadges, savedMsgs] = await Promise.all([
+        const [savedProfile, savedTx, savedGoals, savedBadges, savedMsgs, savedAccounts] = await Promise.all([
           AsyncStorage.getItem(STORAGE_KEYS.PROFILE),
           AsyncStorage.getItem(STORAGE_KEYS.TRANSACTIONS),
           AsyncStorage.getItem(STORAGE_KEYS.GOALS),
           AsyncStorage.getItem(STORAGE_KEYS.BADGES),
           AsyncStorage.getItem(STORAGE_KEYS.MESSAGES),
+          AsyncStorage.getItem(STORAGE_KEYS.ACCOUNTS),
         ]);
 
         if (savedProfile) {
           const parsed = JSON.parse(savedProfile);
-          setProfile(parsed);
+          setProfile({ ...parsed, isLoggedIn: true });
         } else {
           // Permanently store starting profile into the user's phone memory
           await AsyncStorage.setItem(STORAGE_KEYS.PROFILE, JSON.stringify(INITIAL_USER_PROFILE));
+        }
+
+        if (savedAccounts) {
+          setConnectedAccounts(JSON.parse(savedAccounts));
+        } else if (INITIAL_USER_PROFILE.connectedAccounts) {
+          await AsyncStorage.setItem(
+            STORAGE_KEYS.ACCOUNTS,
+            JSON.stringify(INITIAL_USER_PROFILE.connectedAccounts)
+          );
         }
 
         if (savedTx) {
@@ -162,15 +192,20 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
     newProfile: UserProfile,
     newTx: Transaction[],
     newGoals: SavingsGoal[],
-    newBadges: AchievementBadge[]
+    newBadges: AchievementBadge[],
+    newAccounts?: ConnectedBankAccount[]
   ) => {
     try {
-      await Promise.all([
+      const ops: Promise<any>[] = [
         AsyncStorage.setItem(STORAGE_KEYS.PROFILE, JSON.stringify(newProfile)),
         AsyncStorage.setItem(STORAGE_KEYS.TRANSACTIONS, JSON.stringify(newTx)),
         AsyncStorage.setItem(STORAGE_KEYS.GOALS, JSON.stringify(newGoals)),
         AsyncStorage.setItem(STORAGE_KEYS.BADGES, JSON.stringify(newBadges)),
-      ]);
+      ];
+      if (newAccounts) {
+        ops.push(AsyncStorage.setItem(STORAGE_KEYS.ACCOUNTS, JSON.stringify(newAccounts)));
+      }
+      await Promise.all(ops);
     } catch (e) {
       console.warn('Failed to persist state', e);
     }
@@ -381,6 +416,163 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
     );
   };
 
+  // Direct Bank Account Methods
+  const connectBankAccount = async (
+    bankName: string,
+    bankCode: string,
+    phone: string
+  ): Promise<{ success: boolean; account?: ConnectedBankAccount; message: string }> => {
+    try {
+      const discovery = await simulateAccountDiscovery(bankCode, phone);
+      const discAcc = discovery.discoveredAccounts[0];
+
+      const newAccount: ConnectedBankAccount = {
+        id: `acc-${bankCode.toLowerCase()}-${Date.now().toString().slice(-4)}`,
+        bankName,
+        bankCode,
+        accountType: discAcc.accountType,
+        accountNumberMasked: discAcc.accountNumberMasked,
+        balance: discAcc.balance,
+        linkedPhone: phone,
+        lastSyncedAt: new Date().toISOString(),
+        status: 'active',
+        consentId: `RBI-AA-${bankCode}-${Math.floor(100000 + Math.random() * 900000)}`,
+      };
+
+      const updatedAccounts = [newAccount, ...connectedAccounts.filter((a) => a.bankCode !== bankCode)];
+      setConnectedAccounts(updatedAccounts);
+
+      const updatedProfile: UserProfile = {
+        ...profile,
+        isBankConnected: true,
+        connectedBankName: `${bankName} (${newAccount.accountNumberMasked})`,
+        connectedAccounts: updatedAccounts,
+      };
+      setProfile(updatedProfile);
+
+      saveState(updatedProfile, transactions, goals, badges, updatedAccounts);
+
+      return {
+        success: true,
+        account: newAccount,
+        message: `Linked ${bankName} account (${newAccount.accountNumberMasked}) successfully via RBI Account Aggregator!`,
+      };
+    } catch (e: any) {
+      return {
+        success: false,
+        message: e?.message || 'Failed to link bank account. Please check mobile number.',
+      };
+    }
+  };
+
+  const disconnectBankAccount = (accountId: string) => {
+    const updated = connectedAccounts.filter((a) => a.id !== accountId);
+    setConnectedAccounts(updated);
+
+    const updatedProfile: UserProfile = {
+      ...profile,
+      isBankConnected: updated.length > 0,
+      connectedBankName: updated.length > 0 ? `${updated[0].bankName} (${updated[0].accountNumberMasked})` : 'No Bank Connected',
+      connectedAccounts: updated,
+    };
+    setProfile(updatedProfile);
+
+    saveState(updatedProfile, transactions, goals, badges, updated);
+  };
+
+  const syncDirectBankFeed = async (accountId?: string): Promise<{
+    success: boolean;
+    count: number;
+    totalAmount: number;
+    message: string;
+  }> => {
+    const targetAccount = accountId 
+      ? connectedAccounts.find((a) => a.id === accountId)
+      : connectedAccounts[0];
+
+    if (!targetAccount) {
+      return {
+        success: false,
+        count: 0,
+        totalAmount: 0,
+        message: 'No bank account connected. Please add a bank account first.',
+      };
+    }
+
+    try {
+      const feedResult = await fetchDirectBankFeed(
+        targetAccount,
+        profile.customBankApiUrl,
+        profile.customBankApiKey
+      );
+
+      // Filter out transactions that already exist
+      const existingRefs = new Set(transactions.map((t) => t.bankRef).filter(Boolean));
+      const freshTx = feedResult.transactions.filter((t) => !existingRefs.has(t.bankRef));
+
+      let totalDeduction = 0;
+      freshTx.forEach((t) => {
+        totalDeduction += t.amount;
+      });
+
+      const updatedTxList = [...freshTx, ...transactions];
+      setTransactions(updatedTxList);
+
+      // Update account balance and lastSyncedAt
+      const updatedAccounts = connectedAccounts.map((acc) => {
+        if (acc.id === targetAccount.id) {
+          return {
+            ...acc,
+            balance: feedResult.newBalance,
+            lastSyncedAt: new Date().toISOString(),
+          };
+        }
+        return acc;
+      });
+      setConnectedAccounts(updatedAccounts);
+
+      saveState(profile, updatedTxList, goals, badges, updatedAccounts);
+
+      if (freshTx.length > 0) {
+        const first = freshTx[0];
+        setLiveBankAlert({
+          id: `alert-bank-${Date.now()}`,
+          merchant: first.title,
+          amount: first.amount,
+          bankName: targetAccount.bankName,
+          remainingDailyLimit: budget.todayRemaining - first.amount,
+          timestamp: 'Just now',
+        });
+      }
+
+      return {
+        success: true,
+        count: freshTx.length,
+        totalAmount: totalDeduction,
+        message: freshTx.length > 0
+          ? `Direct sync complete: ${freshTx.length} new transactions fetched (₹${totalDeduction.toLocaleString()}). Daily limit recalculated!`
+          : `Direct sync complete: All transactions up to date for ${targetAccount.bankName}.`,
+      };
+    } catch (e: any) {
+      return {
+        success: false,
+        count: 0,
+        totalAmount: 0,
+        message: e?.message || 'Error syncing live bank feed.',
+      };
+    }
+  };
+
+  const setCustomBankApi = (url: string, apiKey?: string) => {
+    const updated: UserProfile = {
+      ...profile,
+      customBankApiUrl: url.trim(),
+      customBankApiKey: apiKey?.trim(),
+    };
+    setProfile(updated);
+    saveState(updated, transactions, goals, badges, connectedAccounts);
+  };
+
   // Mark planned / unplanned
   const markExpensePlanned = (txId: string, planned: boolean) => {
     const updated = transactions.map((t) => (t.id === txId ? { ...t, planned } : t));
@@ -532,6 +724,11 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
         processBankSms,
         liveBankAlert,
         setLiveBankAlert,
+        connectedAccounts,
+        connectBankAccount,
+        disconnectBankAccount,
+        syncDirectBankFeed,
+        setCustomBankApi,
       }}
     >
       {children}

@@ -95,8 +95,10 @@ export const DashboardScreen: React.FC<DashboardScreenProps> = ({
               <Text style={styles.bankEmoji}>🏦</Text>
             </View>
             <View>
-              <Text style={styles.secondaryActionTitle}>Bank Records</Text>
-              <Text style={styles.secondaryActionSub}>SMS & Live Feed</Text>
+              <Text style={styles.secondaryActionTitle}>Direct Bank Feed</Text>
+              <Text style={styles.secondaryActionSub}>
+                {profile.isBankConnected ? profile.connectedBankName : 'Link Bank Account'}
+              </Text>
             </View>
           </TouchableOpacity>
         </View>

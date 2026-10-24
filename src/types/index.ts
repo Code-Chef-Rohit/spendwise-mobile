@@ -27,6 +27,19 @@ export interface Transaction {
   bankRef?: string;
 }
 
+export interface ConnectedBankAccount {
+  id: string;
+  bankName: string;
+  bankCode: string; // e.g. 'HDFC', 'SBI', 'ICICI', 'AXIS', 'KOTAK', 'PNB'
+  accountType: 'Savings' | 'Current';
+  accountNumberMasked: string; // e.g. "•••• 4892"
+  balance: number;
+  linkedPhone: string;
+  lastSyncedAt: string;
+  status: 'active' | 'syncing' | 'error';
+  consentId: string;
+}
+
 export interface UserProfile {
   id: string;
   name: string;
@@ -41,6 +54,9 @@ export interface UserProfile {
   cycleStartDay: number; // default 1
   isBankConnected: boolean;
   connectedBankName: string;
+  connectedAccounts?: ConnectedBankAccount[];
+  customBankApiUrl?: string;
+  customBankApiKey?: string;
   streakDays: number;
   lastActiveDate: string;
   hasCompletedOnboarding: boolean;
