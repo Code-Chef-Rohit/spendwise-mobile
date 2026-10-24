@@ -3,14 +3,30 @@ import { createClient, SupabaseClient } from '@supabase/supabase-js';
 import AsyncStorage from '@react-native-async-storage/async-storage';
 import { Transaction, ConnectedBankAccount } from '../types';
 
-// Default Supabase config keys (can be configured in app settings or .env)
-export const DEFAULT_SUPABASE_URL = '';
-export const DEFAULT_SUPABASE_ANON_KEY = '';
+// Default Supabase config keys (pre-configured with your Supabase project)
+export const DEFAULT_SUPABASE_URL = 'https://oylhwjpcxyqljidmpnup.supabase.co';
+export const DEFAULT_SUPABASE_ANON_KEY =
+  'eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6Im95bGh3anBjeHlxbGppZG1wbnVwIiwicm9sZSI6ImFub24iLCJpYXQiOjE3OTI3OTcxNTksImV4cCI6MjEwODM3MzE1OX0.o9jzmzoec88tu9V2b0Dg6uk3-hy1PtLD4tkHXtzcLKA';
 
 const STORAGE_KEY_SUPABASE_URL = '@paisapilot_supabase_url';
 const STORAGE_KEY_SUPABASE_KEY = '@paisapilot_supabase_key';
 
 let supabaseInstance: SupabaseClient | null = null;
+
+/**
+ * Sanitize Supabase Project URL:
+ * Converts dashboard URLs (e.g. https://supabase.com/dashboard/project/xyz)
+ * into live API gateway URLs (https://xyz.supabase.co)
+ */
+export function sanitizeSupabaseUrl(url: string): string {
+  if (!url) return '';
+  const trimmed = url.trim();
+  const match = trimmed.match(/project\/([a-z0-9_-]+)/i);
+  if (match && match[1]) {
+    return `https://${match[1]}.supabase.co`;
+  }
+  return trimmed;
+}
 
 /**
  * Initialize or get Supabase Client
@@ -22,8 +38,9 @@ export async function getSupabaseClient(): Promise<SupabaseClient | null> {
     const savedUrl = await AsyncStorage.getItem(STORAGE_KEY_SUPABASE_URL);
     const savedKey = await AsyncStorage.getItem(STORAGE_KEY_SUPABASE_KEY);
 
-    const url = savedUrl || DEFAULT_SUPABASE_URL;
-    const anonKey = savedKey || DEFAULT_SUPABASE_ANON_KEY;
+    const rawUrl = savedUrl || DEFAULT_SUPABASE_URL;
+    const url = sanitizeSupabaseUrl(rawUrl);
+    const anonKey = (savedKey || DEFAULT_SUPABASE_ANON_KEY).trim();
 
     if (url && anonKey) {
       supabaseInstance = createClient(url, anonKey, {
@@ -46,10 +63,11 @@ export async function getSupabaseClient(): Promise<SupabaseClient | null> {
  */
 export async function configureSupabase(url: string, anonKey: string): Promise<boolean> {
   try {
-    await AsyncStorage.setItem(STORAGE_KEY_SUPABASE_URL, url.trim());
+    const cleanUrl = sanitizeSupabaseUrl(url);
+    await AsyncStorage.setItem(STORAGE_KEY_SUPABASE_URL, cleanUrl);
     await AsyncStorage.setItem(STORAGE_KEY_SUPABASE_KEY, anonKey.trim());
 
-    supabaseInstance = createClient(url.trim(), anonKey.trim(), {
+    supabaseInstance = createClient(cleanUrl, anonKey.trim(), {
       auth: {
         persistSession: false,
         autoRefreshToken: false,
