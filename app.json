@@ -6,11 +6,6 @@
     "orientation": "portrait",
     "icon": "./assets/icon.png",
     "userInterfaceStyle": "dark",
-    "splash": {
-      "image": "./assets/splash-icon.png",
-      "resizeMode": "contain",
-      "backgroundColor": "#0F172A"
-    },
     "ios": {
       "supportsTablet": false,
       "bundleIdentifier": "com.spendwise.dailycoach"
@@ -35,7 +30,9 @@
       "favicon": "./assets/favicon.png",
       "bundler": "metro"
     },
-    "plugins": [],
+    "plugins": [
+      "expo-font"
+    ],
     "extra": {
       "eas": {
         "projectId": "e1157bc8-ec08-4298-9825-0a4421ed14a8"
