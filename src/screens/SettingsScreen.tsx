@@ -2,6 +2,7 @@ import React, { useState } from 'react';
 import {
   Alert,
   Modal,
+  Platform,
   ScrollView,
   StyleSheet,
   Text,
@@ -842,6 +843,24 @@ const styles = StyleSheet.create({
     color: '#38BDF8',
     fontSize: 12,
     fontWeight: '800',
+  },
+  modalOverlay: {
+    flex: 1,
+    backgroundColor: 'rgba(0, 0, 0, 0.75)',
+    justifyContent: 'flex-end',
+  },
+  closeBtn: {
+    width: 32,
+    height: 32,
+    borderRadius: 16,
+    backgroundColor: 'rgba(255, 255, 255, 0.08)',
+    justifyContent: 'center',
+    alignItems: 'center',
+  },
+  closeBtnText: {
+    color: '#94A3B8',
+    fontSize: 14,
+    fontWeight: '700',
   },
   exportSheet: {
     width: '100%',

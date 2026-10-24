@@ -29,6 +29,7 @@ export const DashboardScreen: React.FC<DashboardScreenProps> = ({
   onOpenSettings,
 }) => {
   const { 
+    profile,
     transactions, 
     budget, 
     categoryBreakdown, 

@@ -22,11 +22,9 @@ export const GoalsScreen: React.FC<GoalsScreenProps> = ({ onBack }) => {
     budget, 
     addGoal, 
     contributeToGoal,
-    goalCreateModalVisible,
-    setGoalCreateModalVisible,
-    goalDepositModalVisible,
-    setGoalDepositModalVisible,
   } = useApp();
+  const [goalCreateModalVisible, setGoalCreateModalVisible] = useState(false);
+  const [goalDepositModalVisible, setGoalDepositModalVisible] = useState(false);
   const [goalTitle, setGoalTitle] = useState('');
   const [goalTarget, setGoalTarget] = useState('');
   const [goalIcon, setGoalIcon] = useState('🎯');
