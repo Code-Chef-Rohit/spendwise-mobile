@@ -178,7 +178,7 @@ export const BankSyncModal: React.FC<BankSyncModalProps> = ({ visible, onClose }
               </View>
               <View>
                 <Text style={styles.bankStripTitle}>{profile.connectedBankName}</Text>
-                <Text style={styles.bankStripSub}>Android SMS Listener • 100% Private</Text>
+                <Text style={styles.bankStripSub}>On-Device Smart Parser • 100% Private</Text>
               </View>
             </View>
             <View style={styles.bankStripBadge}>
