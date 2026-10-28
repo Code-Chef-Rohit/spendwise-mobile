@@ -1,6 +1,7 @@
 import { CategoryType, ConnectedBankAccount, Transaction } from '../types';
 import { autoDetectCategory } from './budgetEngine';
 import { fetchLiveBankFeedFromBackend } from '../services/apiClient';
+import { fetchTransactionsFromCloud } from '../services/supabaseClient';
 
 export interface BankInstitution {
   code: string;
@@ -96,20 +97,6 @@ export const SUPPORTED_BANKS: BankInstitution[] = [
   },
 ];
 
-// Sample real-world merchant catalog for live bank sync
-const LIVE_BANK_MERCHANTS = [
-  { name: 'Swiggy Food', amount: 380, category: 'Food' as CategoryType },
-  { name: 'Zepto Groceries', amount: 265, category: 'Food' as CategoryType },
-  { name: 'Uber Auto Ride', amount: 140, category: 'Transport' as CategoryType },
-  { name: 'Amazon Shopping', amount: 1299, category: 'Shopping' as CategoryType },
-  { name: 'Zomato Dining', amount: 540, category: 'Food' as CategoryType },
-  { name: 'Shell Petrol Pump', amount: 650, category: 'Transport' as CategoryType },
-  { name: 'Apollo Pharmacy', amount: 320, category: 'Health' as CategoryType },
-  { name: 'Blinkit Instant', amount: 210, category: 'Food' as CategoryType },
-  { name: 'Electricity Bescom Bill', amount: 1450, category: 'Bills' as CategoryType },
-  { name: 'Starbucks Coffee', amount: 390, category: 'Food' as CategoryType },
-];
-
 /**
  * Fetch live transactions directly from the bank account
  * Supports custom backend API URL or native live banking feed
@@ -187,41 +174,24 @@ export async function fetchDirectBankFeed(
     console.warn('Backend AA service unavailable, utilizing on-device ledger:', backendErr);
   }
 
-  // 3. Native Direct Bank Feed (Pulling from linked bank's live ledger)
-  // Generates 1 to 2 fresh live transactions from the bank
-  await new Promise((res) => setTimeout(res, 800)); // Network latency simulation
+  // 3. Query Supabase Cloud Database for real transactions
+  try {
+    const cloudTransactions = await fetchTransactionsFromCloud();
+    if (cloudTransactions.length > 0) {
+      return {
+        transactions: cloudTransactions,
+        newBalance: account.balance,
+      };
+    }
+  } catch (cloudErr) {
+    console.warn('Cloud transaction fetch error:', cloudErr);
+  }
 
-  const count = Math.random() > 0.5 ? 2 : 1;
-  const pickedMerchants = [...LIVE_BANK_MERCHANTS]
-    .sort(() => 0.5 - Math.random())
-    .slice(0, count);
-
-  const now = new Date();
-  let totalDeduction = 0;
-
-  const newTransactions: Transaction[] = pickedMerchants.map((m, idx) => {
-    totalDeduction += m.amount;
-    const minutesAgo = (idx + 1) * 7;
-    const txTime = new Date(now.getTime() - minutesAgo * 60 * 1000).toISOString();
-
-    return {
-      id: `live-tx-${Date.now()}-${idx}-${Math.floor(Math.random() * 1000)}`,
-      title: m.name,
-      amount: m.amount,
-      category: m.category,
-      timestamp: txTime,
-      source: 'bank_sync',
-      planned: true,
-      bankRef: `${account.bankCode}-UPI-${Math.floor(100000000 + Math.random() * 900000000)}`,
-      notes: `Live feed verified by ${account.bankName} • A/C ${account.accountNumberMasked}`,
-    };
-  });
-
-  const updatedBalance = Math.max(1000, account.balance - totalDeduction);
-
+  // 4. Pure Real Bank Feed: No fake random data generated
+  // If no new transactions have arrived via bank API/webhook/SMS, return clean empty list
   return {
-    transactions: newTransactions,
-    newBalance: updatedBalance,
+    transactions: [],
+    newBalance: account.balance,
   };
 }
 

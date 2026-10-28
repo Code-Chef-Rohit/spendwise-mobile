@@ -14,6 +14,7 @@ import { parseBankSms, ParsedBankSms, REAL_BANK_SMS_PRESETS } from '../utils/ban
 import { SUPPORTED_BANKS, BankInstitution } from '../utils/directBankEngine';
 import { CATEGORIES } from '../constants/categories';
 import { getSupabaseConfig, isSupabaseConnected } from '../services/supabaseClient';
+import { requestSmsPermission } from '../services/smsReaderService';
 
 interface BankSyncModalProps {
   visible: boolean;
@@ -729,7 +730,28 @@ export const BankSyncModal: React.FC<BankSyncModalProps> = ({ visible, onClose }
             {/* TAB 4: SMS PARSER & BATCH STATEMENT */}
             {activeTab === 'sms_parser' && (
               <View>
-                <Text style={styles.sectionHeading}>PASTE BANK SMS OR NOTIFICATION</Text>
+                <TouchableOpacity
+                  style={styles.requestSmsBtn}
+                  onPress={async () => {
+                    const ok = await requestSmsPermission();
+                    if (ok) {
+                      setStatusMessage({
+                        text: '✅ SMS Read Permission Granted! PaisaPilot can now auto-detect debit SMS alerts from your bank.',
+                        type: 'success',
+                      });
+                    } else {
+                      setStatusMessage({
+                        text: 'SMS permission was not granted. You can still paste or share real bank SMS messages below.',
+                        type: 'info',
+                      });
+                    }
+                  }}
+                  activeOpacity={0.85}
+                >
+                  <Text style={styles.requestSmsBtnText}>📱 Enable Android On-Device Bank SMS Tracking</Text>
+                </TouchableOpacity>
+
+                <Text style={styles.sectionHeading}>PASTE REAL BANK SMS OR NOTIFICATION</Text>
                 <TextInput
                   style={styles.smsInputBox}
                   placeholder="e.g. Rs. 450.00 debited from A/C **1234 on 24-OCT-26 to VPA swiggy@icici (UPI Ref no 4298102384). Avl bal: Rs 34,200.00"
@@ -1227,6 +1249,25 @@ const styles = StyleSheet.create({
     marginBottom: 14,
     borderWidth: 1,
     borderColor: '#334155',
+  },
+  requestSmsBtn: {
+    backgroundColor: '#059669',
+    borderRadius: 12,
+    paddingVertical: 12,
+    paddingHorizontal: 14,
+    alignItems: 'center',
+    marginBottom: 16,
+    shadowColor: '#10B981',
+    shadowOffset: { width: 0, height: 2 },
+    shadowOpacity: 0.25,
+    shadowRadius: 4,
+    elevation: 3,
+  },
+  requestSmsBtnText: {
+    color: '#FFFFFF',
+    fontSize: 12,
+    fontWeight: '800',
+    letterSpacing: 0.3,
   },
   phoneInputRow: {
     flexDirection: 'row',

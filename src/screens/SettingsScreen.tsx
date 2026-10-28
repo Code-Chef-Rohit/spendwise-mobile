@@ -52,15 +52,29 @@ export const SettingsScreen: React.FC<SettingsScreenProps> = ({ onBack }) => {
   };
 
   const handleReset = () => {
-    resetAllData();
-    setName('Debasmita');
-    setIncome('30000');
-    setFixed('10000');
-    setSavings('5000');
-    setBankConnected(true);
-    setNightReportActive(true);
-    setSelectedReportTime('11:00 PM');
-    Alert.alert('Reset Complete', 'Demo profile and transactions restored.');
+    Alert.alert(
+      'Clear All Data & Start Fresh',
+      'This will clear all fake demo transactions, reset your budget, and give you a 100% clean ledger for real bank tracking. Proceed?',
+      [
+        { text: 'Cancel', style: 'cancel' },
+        {
+          text: 'Clear All Data',
+          style: 'destructive',
+          onPress: async () => {
+            await resetAllData();
+            setName('');
+            setIncome('0');
+            setFixed('0');
+            setSavings('0');
+            setBankConnected(false);
+            Alert.alert(
+              'Clean Slate Ready',
+              'All fake demo data removed. You can now enter your real budget and track real bank expenses.'
+            );
+          },
+        },
+      ]
+    );
   };
 
   const calculatedFlexible = Math.max(
@@ -322,9 +336,9 @@ export const SettingsScreen: React.FC<SettingsScreenProps> = ({ onBack }) => {
           </View>
         </View>
 
-        {/* Reset Demo Data Button */}
+        {/* Reset / Clean Data Button */}
         <TouchableOpacity style={styles.resetBtn} onPress={handleReset} activeOpacity={0.7}>
-          <Text style={styles.resetBtnText}>🔄 Reset to Default Demo Data</Text>
+          <Text style={styles.resetBtnText}>🧹 Clear All Fake/Demo Data (Start 100% Clean)</Text>
         </TouchableOpacity>
       </ScrollView>
 

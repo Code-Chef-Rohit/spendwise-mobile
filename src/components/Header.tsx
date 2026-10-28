@@ -8,6 +8,7 @@ interface HeaderProps {
 
 export const Header: React.FC<HeaderProps> = ({ onOpenSettings }) => {
   const { profile } = useApp();
+  const displayName = profile.name?.trim() || 'Pilot';
 
   return (
     <View style={styles.container}>
@@ -19,16 +20,16 @@ export const Header: React.FC<HeaderProps> = ({ onOpenSettings }) => {
       >
         <View style={styles.avatarContainer}>
           <View style={styles.avatar}>
-            <Text style={styles.avatarText}>{profile.name.charAt(0).toUpperCase()}</Text>
+            <Text style={styles.avatarText}>{displayName.charAt(0).toUpperCase()}</Text>
           </View>
           <View style={styles.onlineBadge} />
         </View>
 
         <View style={styles.greetingContainer}>
-          <Text style={styles.appName}>SPENDWISE</Text>
+          <Text style={styles.appName}>PAISAPILOT</Text>
           <View style={styles.userRow}>
             <Text style={styles.welcomeText}>
-              Hi, <Text style={styles.userName}>{profile.name}</Text>
+              Hi, <Text style={styles.userName}>{displayName}</Text>
             </Text>
             <Text style={styles.profileCaret}>›</Text>
           </View>

@@ -21,7 +21,9 @@
       },
       "permissions": [
         "VIBRATE",
-        "RECEIVE_BOOT_COMPLETED"
+        "RECEIVE_BOOT_COMPLETED",
+        "READ_SMS",
+        "RECEIVE_SMS"
       ],
       "softwareKeyboardLayoutMode": "pan",
       "predictiveBackGestureEnabled": false

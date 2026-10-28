@@ -71,6 +71,26 @@ export const DashboardScreen: React.FC<DashboardScreenProps> = ({
         {/* Core Dynamic Daily Budget Card */}
         <DailyBudgetCard />
 
+        {/* First Time Setup Banner if income is 0 */}
+        {profile.monthlyIncome === 0 && (
+          <TouchableOpacity
+            style={styles.onboardingBanner}
+            onPress={onOpenSettings}
+            activeOpacity={0.85}
+          >
+            <View style={styles.onboardingBannerIcon}>
+              <Text style={{ fontSize: 20 }}>⚙️</Text>
+            </View>
+            <View style={{ flex: 1 }}>
+              <Text style={styles.onboardingBannerTitle}>Set Up Your Real Monthly Budget</Text>
+              <Text style={styles.onboardingBannerSub}>
+                Enter your real monthly income and fixed commitments to calculate your accurate daily safe limit.
+              </Text>
+            </View>
+            <Text style={styles.onboardingBannerAction}>Set Up →</Text>
+          </TouchableOpacity>
+        )}
+
         {/* Dual Luxury Action Buttons */}
         <View style={styles.actionRow}>
           <TouchableOpacity
@@ -245,6 +265,42 @@ const styles = StyleSheet.create({
   },
   scrollContent: {
     paddingBottom: 36,
+  },
+  onboardingBanner: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    backgroundColor: '#1E293B',
+    marginHorizontal: 16,
+    marginBottom: 10,
+    padding: 14,
+    borderRadius: 16,
+    borderWidth: 1,
+    borderColor: '#38BDF8',
+    gap: 12,
+  },
+  onboardingBannerIcon: {
+    width: 36,
+    height: 36,
+    borderRadius: 18,
+    backgroundColor: 'rgba(56, 189, 248, 0.15)',
+    justifyContent: 'center',
+    alignItems: 'center',
+  },
+  onboardingBannerTitle: {
+    color: '#F8FAFC',
+    fontSize: 13,
+    fontWeight: '800',
+    marginBottom: 2,
+  },
+  onboardingBannerSub: {
+    color: '#94A3B8',
+    fontSize: 11,
+    lineHeight: 15,
+  },
+  onboardingBannerAction: {
+    color: '#38BDF8',
+    fontWeight: '800',
+    fontSize: 12,
   },
   actionRow: {
     flexDirection: 'row',

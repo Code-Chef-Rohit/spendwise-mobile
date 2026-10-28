@@ -159,26 +159,44 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
 
         if (savedProfile) {
           const parsed = JSON.parse(savedProfile);
+          // Clean legacy demo name and mock numbers if present
+          if (parsed.name === 'Debasmita' || parsed.monthlyIncome === 30000) {
+            parsed.name = '';
+            parsed.monthlyIncome = 0;
+            parsed.fixedExpenses = 0;
+            parsed.savingsTarget = 0;
+            parsed.isBankConnected = false;
+            parsed.connectedBankName = '';
+            parsed.connectedAccounts = [];
+            await AsyncStorage.setItem(STORAGE_KEYS.PROFILE, JSON.stringify(parsed));
+          }
           setProfile({ ...parsed, isLoggedIn: true });
         } else {
-          // Permanently store starting profile into the user's phone memory
           await AsyncStorage.setItem(STORAGE_KEYS.PROFILE, JSON.stringify(INITIAL_USER_PROFILE));
         }
 
         if (savedAccounts) {
-          setConnectedAccounts(JSON.parse(savedAccounts));
-        } else if (INITIAL_USER_PROFILE.connectedAccounts) {
-          await AsyncStorage.setItem(
-            STORAGE_KEYS.ACCOUNTS,
-            JSON.stringify(INITIAL_USER_PROFILE.connectedAccounts)
-          );
+          const accs = JSON.parse(savedAccounts);
+          const realAccs = Array.isArray(accs) ? accs.filter((a: any) => a.id !== 'acc-hdfc-4892') : [];
+          setConnectedAccounts(realAccs);
         }
 
         if (savedTx) {
-          setTransactions(JSON.parse(savedTx));
+          const parsed = JSON.parse(savedTx);
+          // Purge any legacy fake demo transactions
+          const realTx = Array.isArray(parsed)
+            ? parsed.filter(
+                (t: any) =>
+                  !t.id?.startsWith('tx-today-') &&
+                  !t.id?.startsWith('tx-past-') &&
+                  !t.id?.startsWith('live-tx-')
+              )
+            : [];
+          setTransactions(realTx);
+          await AsyncStorage.setItem(STORAGE_KEYS.TRANSACTIONS, JSON.stringify(realTx));
         } else {
-          // Permanently store starting expense history into the user's phone memory
-          await AsyncStorage.setItem(STORAGE_KEYS.TRANSACTIONS, JSON.stringify(INITIAL_TRANSACTIONS));
+          setTransactions([]);
+          await AsyncStorage.setItem(STORAGE_KEYS.TRANSACTIONS, JSON.stringify([]));
         }
 
         if (savedGoals) setGoals(JSON.parse(savedGoals));
@@ -727,16 +745,16 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
     return JSON.stringify(payload, null, 2);
   };
 
-  // Reset to initial demo state
+  // Reset to initial clean state (clears all data)
   const resetAllData = async () => {
     setProfile(INITIAL_USER_PROFILE);
-    setTransactions(INITIAL_TRANSACTIONS);
-    setGoals(INITIAL_SAVINGS_GOALS);
+    setTransactions([]);
+    setGoals([]);
     setBadges(INITIAL_ACHIEVEMENT_BADGES);
+    setConnectedAccounts([]);
     await AsyncStorage.clear();
-    // Re-seed phone storage immediately
     await AsyncStorage.setItem(STORAGE_KEYS.PROFILE, JSON.stringify(INITIAL_USER_PROFILE));
-    await AsyncStorage.setItem(STORAGE_KEYS.TRANSACTIONS, JSON.stringify(INITIAL_TRANSACTIONS));
+    await AsyncStorage.setItem(STORAGE_KEYS.TRANSACTIONS, JSON.stringify([]));
   };
 
   return (
